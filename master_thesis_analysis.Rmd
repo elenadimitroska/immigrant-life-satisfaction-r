@@ -1,0 +1,3196 @@
+---
+title: "Assimilation and Life Satisfaction among Immigrants in Germany"
+author: "Elena Birkner"
+date: "2024"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+dir.create("output", showWarnings = FALSE)
+```
+
+### Master's thesis code
+
+> Portfolio version: private university network paths were removed. The original SOEP data are not redistributed.
+
+
+Clear working space and load/install packages
+```{r start, echo=TRUE,results='hide', message=FALSE, warning=FALSE, include=FALSE}
+#rm(list=ls())
+my_packages <-c("plm","tidyverse","haven", "Hmisc", "sampling", "readstata13", "labelled", "SOEPhelp", 
+                "naniar", "table1", "xtsum", "stargazer", "car","lmtest", "sandwich", "loo", "lmtest", "effects",
+                "writexl", "ggrepel", "margins","rvest", "gridExtra","patchwork", "performance",
+                "lme4", "clubSandwich", "marginaleffects")
+
+lapply(my_packages, function(x) if (!(x %in% installed.packages())) {
+  install.packages(x)
+})
+
+lapply(my_packages, library, quietly = TRUE, character.only = TRUE)
+```
+
+### 1. Data and descriptive statistics
+ 
+# 1.1. Retrieving basic information from the v37 teaching version of the German Socio-Economic Panel (GSOEP)
+
+```{r }
+# The SOEP teaching dataset is not included in this repository.
+# Set the environment variable SOEP_DATA_PATH to the local folder containing
+# the v37 teaching edition before running the analysis.
+soep <- Sys.getenv("SOEP_DATA_PATH")
+if (soep == "") {
+  stop("Please set SOEP_DATA_PATH to your local SOEP teaching-data directory.")
+}
+soep2 <- file.path(soep, "raw")
+
+ppathl <- read_dta(file.path(soep, "ppathl.dta"))
+cirdef <- read_dta(file.path(soep2, "cirdef.dta"))
+unique(cirdef$rgroup20) #teaching data set used
+```
+"German data protection laws stipulate that only a maximum of 50% of all cases in the original data set may be used for teaching purposes. As of Version 35 data from 1984-2018), we provide our users with a teaching version that has the same data structure as the original data (with the exception of the EU-SILC clone) but just contains half the number of cases.The variable RGROUP20, which can be found in the data set CIRDEF, has exactly 20 values. Only cases with values from 11 to 20 may be used for teaching purposes."
+https://www.diw.de/en/diw_01.c.603154.en/soep_in_the_college_classroom.html#c_diw_01.c.682607.de
+
+
+**Creating panel data set for 21 years from 2000 to 2020**
+
+ppathl = Individual Tracking File 
+Person core information and respondent status for each year in long format. It contains one record for each individual and year a person has been a member of a respondent household. 
+It is keyed on PID, the Cross-Wave Person Identifier, and SYEAR, the survey year identifier. 
+It contains the Household ID, and never changing individual characteristics, individual weights, as well as the response status, for that individual at each wave 
+https://companion.soep.de/Working%20with%20SOEP%20Data/Working%20with%20Tracking%20Data.html
+
+```{r }
+ppathl <- ppathl %>% 
+  dplyr::filter(syear %in% (2000:2020)) %>% 
+  dplyr::select(pid, hid, sex, gebjahr, migback, immiyear, corigin, syear, nett1, pop, 
+                germborn, arefback) #select the following variables
+glimpse(ppathl)
+min(ppathl$syear) #year from - available in filtered data set
+max(ppathl$syear) #year to - available in filtered data set
+nrow(ppathl) #check number of observations to start with #467176
+```
+
+Detailed information on selected variables is available in separate excel file named documentation_variables_SOEP and in the final thesis in the Appendix table about data
+
+**Keeping the observations with the following characteristics:**
+
+nett1=Current survey status (old 1 digit) = 1 = Successful Interview 
+pop=Sample Membership = 1 = Private HH, German HH-Head and 2= Private HH, Foreign HH-Head
+```{r }
+print_labels(ppathl$nett1) #see what every code means also available in documentation in English
+ppathl <- ppathl %>% filter( nett1 == 1 ) #only keep successful interviews other categories are kids below survey age in the hh, not participated in the hh or missing this wave
+print_labels(ppathl$pop) #see what every code means also available in documentation in English
+ppathl <- ppathl %>% filter( pop == 1 | pop == 2 ) #only keep private (german and foreign) hh, not collective accommodation, institutionalized etc.
+ppathl$nett1 <- NULL #remove the column, only needed for filtering
+ppathl$pop <- NULL #remove the column, only needed for filtering
+nrow(ppathl) #check how many observations are left #269705
+```
+**Retrieving information from pequiv.dta**
+
+Generated data set, that contains large number of individual-level and household-level data to ensure a harmonized cross-country comparison
+```{r }
+pequiv <- read_dta(file.path(soep, "pequiv.dta")) #cca 3-4 minutes loading
+pequiv <- pequiv%>% 
+  dplyr::filter(syear %in% (2000:2020)) %>%
+  dplyr::select(pid=pid, syear=syear, age=d11101, mar=d11104, hhsize=d11106, hhinc=i11102,
+                edu=d11109, ls=p11101, empl=e11102)
+nrow(pequiv) #399279
+```
+
+The observations in both data frames, ppathl and pequiv, are identified by the variable pid and syear
+```{r }
+head(pequiv)
+head(ppathl)
+```
+
+**Joining information from both data frames ppathl and pequiv**
+
+The function left_join() keeps all observations in the data frame ppathl
+```{r }
+d <- left_join(ppathl, pequiv, by=c("pid", "syear")) #keeps all observations in x in this case in ppathl this is the main tracking file
+glimpse(d)
+nrow(d) #all observations kept from ppathl #269,705
+rm(ppathl, pequiv, cirdef) #remove original data files
+length(unique(d$pid)) #44978
+length(unique(d$hid)) #24916
+d %>%  filter(syear == 2020) %>%summarise(unique_count = n_distinct(pid)) %>%  print() #15159 pids in 2020
+d %>%  filter(syear == 2020) %>%summarise(unique_count = n_distinct(hid)) %>%  print() #9748 hids in 2020 
+```
+
+**Inspect data set**
+
+The data set includes all necessary variables for the analysis
+```{r }
+contents(d)
+# View(d)  # optional interactive inspection
+dcopy <- d #copy of the data before recoding missing values and subseting data
+#write_xlsx(d, "my_data.xlsx") #to check changes before recoding and subseting data
+```
+
+# 1.2. Re code negative numbers as missing values
+
+Missing values in the SOEP are recorded as negative numbers
+R uses NA to indicate missing values. Therefore, it is needed SOEP missing values to be recoded to R missing values
+
+**Re code missing values:**
+
+```{r }
+colnames(d)
+
+#pid
+table(d$pid[d$pid<0]) #check negative values, no negative
+
+#hid
+table(d$hid[d$hid<0]) #check negative values, no negative  
+```
+
+```{r }
+#sex
+table(d$sex[d$sex<0]) #check negative values, -3 = [en] Answer improbable, 8 obs with missing values
+d$sex[d$sex<0] <- NA #transform to R n/a value
+d %>%filter(is.na(sex))%>%group_by(migback)%>%summarise(count_nas = n())%>%arrange(desc(count_nas))
+#applies to natives
+d %>%filter(is.na(sex))%>%group_by(syear)%>%summarise(count_nas = n())%>%arrange(desc(count_nas))
+#missing values only in the last two years, 2019 and 2020
+d %>% filter(is.na(sex)) #4 pids in 2 consecutive years did not provide an answer, item non-response,
+#assumed missing at random
+```
+
+```{r }
+#gebjahr
+table(d$gebjahr[d$gebjahr<0]) #check negative values, -1 =	[-1] No Answer, 3 obs with missing values
+d$gebjahr[d$gebjahr<0] <- NA #transform to R n/a value
+d %>% filter(is.na(gebjahr)) #more questions are not answered, partial non response but not completely unit non response
+#assumed missing at random
+```
+
+```{r }
+#migback 
+table(d$migback[d$migback<0]) #check negative values, no negative 
+```
+
+```{r }
+#immiyear
+table(d$immiyear[d$immiyear<0]) #check negative values, -1 = No Answer, 2289 obs; -2 = Does not apply, 222873 obs
+immiyearcheck <- d %>% filter(immiyear == -2) #natives and second gen immigrants should be not apply
+unique(immiyearcheck$migback) #only migback 1 and 3 
+immiyearcheck %>%  group_by(migback, immiyear ) %>%  summarise(Count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = immiyear, values_from = Count, values_fill = list(Count = 0))
+#it is confirmed natives and second generation have no immigration year
+
+#answer -2 (Does not apply) will be recoded to zero as it is not considered a missing value
+d <- d %>%
+  mutate(across(c(immiyear), ~case_when(
+    .x == -1 ~ NA,
+    .x == -2 ~ 0,
+    TRUE ~ .x  )))  
+
+#check if correctly recoded 
+d %>% group_by(migback) %>% dplyr::summarize(count_na = sum(is.na(immiyear)), .groups = "drop") %>% print(n = 21)
+#missing values only in immigrants, 2289 observations
+
+d %>%filter(is.na(immiyear))%>%group_by(syear)%>%summarise(count_nas = n())%>%arrange(desc(count_nas))
+#2289 obs have missing immigration year and it appears missing in every survey year, mostly in year 2000 and next in 2020, assumed missing at random 
+
+#filter and group by pid
+d %>%filter(is.na(immiyear))%>%group_by(pid)%>%summarise(count_nas = n())%>%arrange(desc(count_nas))  
+#order by count_nas in descending order
+#669 pids have missing immigration year, some in every survey since the beginning of the sample
+rm(immiyearcheck)
+```
+
+```{r }
+#corigin
+table(d$corigin[d$corigin<0]) #check negative values, -1 = [en] No Answer, 175 obs with missing values
+d$corigin[d$corigin<0] <- NA #transform to R n/a value  
+
+d %>%filter(is.na(corigin))%>%group_by(syear)%>%summarise(count_nas = n())%>%arrange(desc(count_nas)) 
+#mostly missing in year 2009 and in earlier survey years of the sample
+
+d %>% group_by(migback) %>% dplyr::summarize(count_na = sum(is.na(corigin)), .groups = "drop") %>% print(n = 21)
+#missing only at immigrants
+
+#filter and group by pid
+d %>%filter(is.na(corigin))%>%group_by(pid)%>%summarise(count_nas = n())%>%arrange(desc(count_nas)) 
+#62 pids have missing country of origin
+
+#filter and group by pid for both 'corigin' and 'immiyear'
+d %>% # Filter rows where both 'corigin' and 'immiyear' have NA values
+  filter(is.na(corigin) & is.na(immiyear))%>%
+  group_by(pid) %>%summarise(count_nas = n()) %>% arrange(desc(count_nas)) 
+#out of 62 total missing pids, 47 have both missing immigration year and country of origin
+```
+
+```{r }
+#syear
+table(d$syear[d$syear<0]) #check negative values, no negative 
+```
+
+```{r }
+#sgermborn
+table(d$germborn[d$germborn<0]) #check negative values, no negative 
+```
+
+```{r }
+#arefback
+table(d$arefback[d$arefback<0]) #check negative values, -1= [en] No Answer, 341 obs with missing values
+d$arefback[d$arefback<0] <- NA #transform to R n/a value 
+
+d %>% filter(is.na(arefback))%>% group_by(syear) %>% summarise(count_nas = n()) %>% arrange(desc(count_nas)) 
+#mostly missing in the earlier survey years of the sample, assumed missing at random
+
+#filter and group by pid
+d %>% filter(is.na(arefback))%>% group_by(pid) %>% summarise(count_nas = n()) %>% arrange(desc(count_nas)) 
+#110 pids have missing refugee status
+
+#filter and group by pid for both 'corigin' and 'immiyear'
+d %>%
+  # Filter rows where both 'corigin' and 'immiyear' have NA values
+  filter(is.na(immiyear) & is.na(arefback)) %>%
+  group_by(pid) %>% summarise(count_nas = n()) %>%
+  arrange(desc(count_nas))#out of 110 total missing pids, 74 have both missing immigration year and refugee status
+```
+
+```{r }
+#age
+table(d$age[d$age<0]) #check negative values, -1 = [en] No answer, 3 obs with missing values
+d$age[d$age<0] <- NA #transform to R n/a value  
+d %>% filter(is.na(age)) #more questions are not answered, partial non response but not completely unit non response
+#assumed missing at random, same pids without gebjahr are missing also age, both variables are connected
+
+# Check if there is a difference between variable age and the calculated age = syear - gebjahr
+d$age2 <- d$syear - d$gebjahr #calculate age at the time of the survey
+d$agediff  <- d$age - d$age2 #no difference between variable age and calculated age
+unique (d$agediff) #zero difference
+sum(d$agediff, na.rm = TRUE) #both variables give same result
+d$agediff = NULL #remove the column
+d$age2 = NULL #remove the column
+d$gebjahr = NULL #remove the column, keep only age as variable
+```
+
+```{r }
+#mar
+table(d$mar[d$mar<0]) #check negative values, -1 = [en] No answer, 1302 obs with missing values
+d$mar[d$mar<0] <- NA #transform to R n/a value
+
+d %>%  filter(is.na(mar))%>%   group_by(syear) %>%   summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#in every syear there are missing values, mostly in 2019 and in 2011
+d %>%  filter(is.na(mar))%>%   group_by(migback) %>%   summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#more natives with missing values
+
+#check by age groups
+d <- d %>%
+  mutate(age_group = case_when(
+    age >= 0 & age <= 24 ~ "0-24",
+    age > 24 & age <= 45 ~ "25-45",
+    age > 45 & age <= 65 ~ "46-65",
+    age > 65 ~ "66+"))
+
+d %>%  filter(is.na(mar))%>%   group_by(age_group) %>%   summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#mostly 66+ years per age group and until the age of 25, (643 missing values for this 2 groups out of 1302 obs), which will be excluded from analysis
+d %>% group_by(sex) %>% dplyr::summarize(count_na = sum(is.na(mar)), .groups = "drop") %>% print(n = 100)
+#mostly females with missing values
+d %>%  filter(is.na(mar))%>%   group_by(pid) %>%   summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#641 pids have missing marital status
+#assumed missing at random
+```
+
+```{r }
+#hhsize
+table(d$hhsize[d$hhsize<0]) #check negative values, no negative 
+```
+```{r }
+#hhinc
+table(d$hhinc[d$hhinc<0]) #check negative values, -5 =[en] Not included in this version of the questionnaire, 
+#3963 obs with missing values
+d$hhinc[d$hhinc<0] <- NA #transform to R n/a value 
+d %>%  filter(is.na(hhinc))%>%  group_by(syear) %>% summarise(count_nas = n()) %>% arrange(desc(count_nas)) 
+#hhinc is from pequiv data set, missing values are from 2016 to 2020, mostly in 2016 and 2017, (2686 obs for these 2 years out of 3963 obs)
+d %>%  filter(is.na(hhinc))%>% group_by(age_group) %>% summarise(count_nas = n()) %>% arrange(desc(count_nas)) 
+#age groups until the age of 25 and 66+ will be excluded from analysis
+#assumed missing at random due to not included in this version of the questionnaire
+```
+
+```{r }
+#edu
+table(d$edu[d$edu<0]) #check negative values, -1 = [en] No answer, 5117 obs; -2 = [en] Does not apply, 9972 obs
+d %>%  filter(edu == -2)%>% group_by(age_group) %>% summarise(Count = n())
+#out of 9972 observations with answer does not apply, 7756 are for age group 0-24 years old and additional 232 
+#for age 66+ total 7988 which will be excluded from analysis 
+d %>%  filter(edu == -1)%>% group_by(age_group) %>% summarise(Count = n())
+#out of 5117 observations with no answer, 3458 are for age group 0-24 years old which will be excluded from analysis 
+d$edu[d$edu<0] <- NA #transform to R n/a value 
+sum(is.na(d$edu)) #15089 obs with missing values
+d %>%  filter(is.na(edu))%>%group_by(age_group) %>%summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#11214 obs under the age of 25, and 304 obs with age 66+, 15089-11214-275 = 3600 obs with missing values will remain in the main sample for analysis
+#assumed missing at random, mostly young individuals which will be excluded from analysis
+```
+
+```{r }
+#ls
+table(d$ls[d$ls<0]) #check negative values, -1 = [en] No answer, 658 obs; -2 = [en] Does not apply, 3561 obs; -5	= [en] Not included in this version of the questionnaire, 1885 obs
+d %>%  filter(ls == -1)%>% group_by(age_group) %>% summarise(Count = n())
+#-1 = [en] No answer, 658 obs, out of which 112 obs missing for age group 0-24 and additional 170 obs for age 66+, total 282 obs
+d %>%  filter(ls == -2)%>% group_by(age_group) %>% summarise(Count = n())
+#-2 = [en] Does not apply, all 3561 obs missing for age group 0-24 which will be excluded from analysis
+d %>%  filter(ls == -5)%>% group_by(age_group) %>% summarise(Count = n())
+#-5	= [en] Not included in this version of the questionnaire, 1885 obs, out of which 163 obs missing for age group 0-24 and additional 459 obs for age 66+, total 622 obs
+d %>%  filter(ls == -5)%>% group_by(syear) %>% summarise(Count = n())
+#not included in survey year 2011 and 2012
+d$ls[d$ls<0] <- NA #transform to R n/a value 
+sum(is.na(d$ls)) #6104 obs with missing values
+d %>%  filter(is.na(ls))%>%group_by(age_group) %>%summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#3836 obs under the age of 25, and 629 obs with age 66+, 6104-3836-629 = 1639 obs with missing values will remain in the main sample for analysis
+#assumed missing at random, mostly young individuals which will be excluded from analysis
+```
+
+```{r }
+#empl
+table(d$empl[d$empl<0]) #check negative values, -1 = [en] No answer, 118 obs
+d$empl[d$empl<0] <- NA #transform to R n/a value 
+d %>%  filter(is.na(empl))%>%group_by(age_group) %>%summarise(count_nas = n()) %>%  arrange(desc(count_nas)) 
+#115 out of 118 in total missing values are for age group 0-24 which will be excluded from analysis
+#assumed missing at random
+```
+
+**Check for negative values in each column** 
+
+```{r }
+d %>%  dplyr::summarize(across(everything(), ~any(. < 0))) %>%  print() #no negative values
+#Summary statistics before dropping observations, check if all missing values are recoded properly
+summary(d) #no negative values, mostly missing with edu with young individuals which will be excluded from the analysis
+colSums(is.na(d)) #education, life satisfaction and income are top 3
+```
+# 1.3. Selecting a subset of observations
+
+**Only selecting natives and first generation immigrants, 1 and 2**
+
+```{r }
+#Check the information in migback and germborn as they are connected for correct filtering of immigrants and natives 
+table(d$migback) #1	= [en] no migration background; 2 = [en] direct migration background; 
+#3 = [en] indirect migration background #1 (209540)      #2 (46832)    #3 (13333)
+table(d$germborn) #1 = [en] born in Germany or immigr.<1950 and 2 = [en] not born in Germany
+#1 (222873) #2 (46832)
+d%>%group_by(germborn,migback)%>% summarise(count = n(), .groups = 'drop')
+#It is confirmed that individuals born in Germany are with migration background 1 (209540) and 3 (13333) total 222873 germborn with value 1.
+#so migration background value 2 (46832) is immigrants not born in Germany, with direct migration background
+d%>%filter(germborn==1)%>%  pull(corigin) %>% unique() %>%print() #all are born in Germany
+#Only migback 1 and 2 will be selected for further analysis, 1 representing natives and 2 immigrants
+d <- d %>%
+  filter(migback %in% c(1, 2))
+nrow(d) #256372 obs left
+d$germborn <- NULL #this variable is now equal to migback
+```
+
+**Only selecting ages from 25 to 65, working population**
+
+```{r }
+min(d$age, na.rm = TRUE) #12 years
+max(d$age, na.rm = TRUE) #102 years
+
+#Check how many immigrants and natives are in these two groups
+d %>%filter(age < 25) %>%summarise(count = n(), .groups = 'drop') #26179 obs/256372 = 10% whole sample
+d %>%filter(age > 65) %>%summarise(count = n(), .groups = 'drop') #46411 obs/256372 = 18% whole sample
+d %>%filter(migback==2 & age < 25) %>%summarise(count = n(), .groups = 'drop') #4692 obs only immigrants
+d %>%filter(migback==2 & age > 65) %>%summarise(count = n(), .groups = 'drop') #4038 obs only immigrants
+d %>%filter(migback==1 & age < 25) %>%summarise(count = n(), .groups = 'drop') #21487 obs natives
+d %>%filter(migback==1 & age > 65) %>%summarise(count = n(), .groups = 'drop') #42373 obs natives
+
+#Check age distribution 
+count_age <- d %>% group_by(age) %>%  summarise(count = n(), .groups = 'drop')
+ggplot(count_age, aes(x = age, y = count)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Distribution by Age",
+       x = "Age",
+       y = "Count")
+
+#Filter the ages
+d <- d%>%
+  filter(is.na(age) | 
+    age >= 25 & age <= 65)
+nrow(d) #183782 obs left
+rm(count_age)
+```
+
+**Individuals in the top and bottom 0.5% of the income distribution are excluded from the analysis**
+
+```{r }
+d <- d %>% filter(is.na(hhinc) | 
+  hhinc > quantile(hhinc, probs = 0.005, na.rm = TRUE) &
+    hhinc < quantile(hhinc, probs = 0.995, na.rm = TRUE))
+nrow(d) #181969 obs left
+```
+# 1.4. Further cleaning of missing values and transforming variables for analysis
+
+**Count and percentage of NA values in each column after subseting the data**
+
+```{r }
+na_count_per_column <- colSums(is.na(d))
+print(na_count_per_column) #education, hh income and life satisfaction are top 3 with missing values
+sum(na_count_per_column) #10142 missing values across observations
+gg_miss_var(d) #Plot the number of missing for each variable, education, hh income, ls and immigration year
+```
+
+**Plot the percentage of missing values for each variable**
+
+```{r }
+missing_percentages <- d%>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.))/n() * 100)) %>%
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "PercentageMissing")
+print(missing_percentages)
+
+ggplot(missing_percentages, aes(x = Column, y = PercentageMissing, fill = Column)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Percentage of Missing Values by Column",
+       x = "Column",
+       y = "Percentage Missing") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels for readability
+rm(missing_percentages)
+
+#Combinations of missingness across cases
+gg_miss_upset(d) #most combo is education and hh income
+```
+
+**Drop observations with missing values on key variables** 
+
+Missing values cannot be used in the analysis. 
+The analysis is based on a data set with complete cases only.
+So all observations with missing values on any variable are removed.
+That is, missing values in any variable are excluded and only complete cases are used.
+```{r }
+nrow(d) #181969 observations
+d1 <-d #to compare before and after missing values difference
+d <- na.omit(d)
+nrow(d) #172675 observations are kept
+nrow(d1)-nrow(d) #9294 are deleted, still considerable amount of data to be analysed
+(nrow(d)-nrow(d1))/nrow(d1)*100 #5% decrease in observations
+colSums(is.na(d)) #no missing values across data set
+```
+
+**Creating a dummy variable for male**
+
+```{r }
+d %>%  mutate(sex = as_factor(sex))%>% group_by(sex) %>% summarise(count = n()) #80810 male and 91865 female
+d$male <- ifelse( d$sex == 1, yes = 1, no = 0 )
+label(d$male) <- "Male (0/1)"
+d$male <- factor(d$male,levels = c(0,1),labels = c("Female", "Male"))
+table(d$male) #80810 male and 91865 female but some will be deleted by ysm later not final number
+```
+**Creating a dummy variable for immigrants**
+
+```{r }
+d %>%  mutate(migback = as_factor(migback))%>% group_by(migback) %>% summarise(count = n()) #140778 natives and 31897 immigrants
+d$immigrants <- ifelse( d$migback == 2, yes = 1, no = 0)
+label(d$immigrants) <- "Immigrants (0/1)"
+d$immigrants <- factor(d$immigrants, levels = c(0,1), labels = c("Natives", "Immigrants"))
+table(d$immigrants) #140778 natives and 31897 immigrants but some will be deleted by ysm later not final number
+```
+
+**Creating a dummy variable for marital status**
+
+```{r }
+d %>%  mutate(mar = as_factor(mar))%>% group_by(mar) %>% summarise(count = n()) #116983 married rest not married
+d$mar <- ifelse( d$mar == 1, yes = 1, no = 0 )
+label(d$mar) <- "Marital status (0/1)"
+d$mar <- factor(d$mar,levels = c(0,1),labels = c("Not married", "Married"))
+table(d$mar) #55692 not married and 116983 married but some will be deleted by ysm later not final number
+```
+
+**Creating a dummy variable for employment status**
+
+```{r }
+d %>%  mutate(empl = as_factor(empl))%>% group_by(empl) %>% summarise(count = n()) #37424 not employed and 135251 employed
+d$empl <- ifelse( d$empl == 1, yes = 1, no = 0 )
+label(d$empl) <- "Employment status (0/1)"
+d$empl <- factor(d$empl,levels = c(0,1),labels = c("Not employed", "Employed"))
+table(d$empl) #37424 not employed and 135251 employed but some will be deleted by ysm later not final number
+```
+
+**Creating a variable for equivalised income based on formula hhinc/sqrt(hhsize) in log**
+
+```{r }
+d$inc <-d$hhinc/sqrt(d$hhsize)
+d$log_inc <-log(d$inc)
+```
+
+**Creating a variable for Years since miggration (YSM)**
+
+```{r }
+d%>%filter(immiyear==0)%>%group_by(immigrants)%>%summarise(unique_count = n_distinct(immigrants)) #zero is for natives
+d %>% select(immiyear) %>% distinct() %>% arrange(immiyear) %>% pull(immiyear) %>%print()
+#starts from 1951 to 2020
+d <- d %>%  mutate(ysm = ifelse(immiyear == 0, 0, syear - immiyear))
+d %>% filter(migback==2)%>% summarise(min_ysm = min(ysm)) #0 ysm
+max(d$ysm) #64 ysm
+
+#Count the number of pids per ysm
+count_ysm <- d %>%filter(migback==2)%>%group_by(ysm) %>%  summarise(count = n(), .groups = 'drop')
+d %>%filter(ysm > 40) %>%summarise(count = n(), .groups = 'drop') #1434 obs/31897 immigrants = 4%
+
+#Check the distribution of immigrants ysm
+ggplot(count_ysm, aes(x = ysm, y = count)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Distribution of Immigrants by Years Since Migration",
+       x = "Years Since Migration",
+       y = "Count of Immigrants")
+
+#Exclude values for immigrants 0 ysm and above 40 years of migration
+d <- d %>%
+  filter(!(migback == 2 & ysm == 0)) #172646 obs left 
+
+d <- d %>%
+  filter(ysm <= 40) #171212 obs left
+
+#Check again ysm variable if correctly excluded
+d %>% filter(migback==2)%>% summarise(min_ysm = min(ysm)) #starts with 1 ysm
+max(d$ysm) #max 40 ysm 
+count_ysm <- d %>%filter(migback==2)%>%group_by(ysm) %>%  summarise(count = n(), .groups = 'drop')
+
+#Check the distribution again
+ggplot(count_ysm, aes(x = ysm, y = count)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Distribution of Immigrants by YSM",
+       x = "Years Since Migration",
+       y = "Count of Immigrants") #mostly recent immigrants up to 10 years
+
+d <- d %>%
+  mutate(ysm_group = case_when(
+    ysm >= 0 & ysm < 1 ~ "0",
+    ysm >= 1 & ysm <= 10 ~ "1-10",
+    ysm > 10 & ysm <= 20 ~ "11-20",
+    ysm > 20 & ysm <= 30 ~ "21-30",
+    ysm > 30 ~ "31-40")) #the zero is for natives
+
+d%>%group_by(ysm_group)%>% summarise(count = n(), .groups = 'drop')
+
+table(d$immigrants) #140778 natives and 30434 immigrants final sample  
+rm(count_ysm)
+```
+
+**Check refugees in the sample of immigrants as information for the data description**
+
+```{r }
+#Check refugees in the sample of immigrants
+d %>%  mutate(arefback = as_factor(arefback))%>% group_by(arefback) %>% summarise(count = n()) #165059 without and 6153 with refugee experience
+d%>%group_by(migback,arefback)%>% summarise(count = n(), .groups = 'drop') #6132 obs have refugee experience  persons with migback 2 (99%) and some 21 observations with migback 1  
+#Count rows where arefback == 2 and migback == 2
+count_ref <- d %>%  filter(arefback == 2 & migback == 2) %>%   summarise(count = n()) %>%  pull(count) #6132 obs
+#Count rows where migback == 2
+count_migback <- d %>%  filter(migback == 2) %>%  summarise(count = n()) %>%  pull(count) #30434 obs
+#Calculate the percentage
+percentage <- (count_ref / count_migback) * 100
+#Print the result
+print(paste("Percentage:", percentage, "%")) #20% refugees from the total sample of immigrants
+
+#From which countries are they coming from
+#Convert corigin into country name
+d <- d %>%
+  mutate(corigin = as_factor(corigin),  # Convert haven_labelled to factor
+         corigin = as.character(corigin))  # Then convert factor to character
+
+d <- d %>%
+  # Extract numbers within brackets into a new column 'coriginnumber' and 'coriginname'
+  tidyr::extract(corigin, into = c("coriginnumber", "coriginname"),
+          regex = "\\[([0-9]+)\\]\\s*(.*)",
+          remove = FALSE)
+d %>% filter(migback==2 & arefback==2)%>% group_by(coriginname) %>% summarise(count = n())%>%arrange(desc(count))
+#Top 3 countries are Syria 2433 obs, Irak 603 obs and Afganistan +464 obs total top 3 is 3500 obs/6132 = 57% 
+d %>% filter(migback==2 & arefback==2 & coriginname=="Syrien")%>% group_by(immiyear)%>% summarise(count = n())%>%arrange(desc(count)) #from the last 5 years most of them because of the Syrian war
+```
+
+**Creating a variable for age group**
+
+```{r }
+d%>%group_by(age_group)%>% summarise(count = n(), .groups = 'drop')
+
+d <- d %>%
+  mutate(age_group = case_when(
+    age >= 25 & age <= 34 ~ "25-34",
+    age > 34 & age <= 44 ~ "35-44",
+    age > 44 & age <= 54 ~ "45-54",
+    age > 54 ~ "55-65"))
+
+d%>%group_by(age_group)%>% summarise(count = n(), .groups = 'drop')
+```
+
+**Creating a variable for country of origin**
+
+```{r }
+#check migration per country of origin
+migcorigin <- d %>%  filter(migback == 2) %>%  group_by(coriginname) %>%  summarise(count = n()) %>%
+  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+
+write_xlsx(migcorigin, file.path("output", "migcorigin.xlsx"))
+
+#Group countries per regions
+d <- d %>%
+  mutate(corigin_group = case_when(
+    coriginname %in% c("Deutschland") ~"Germany",
+    coriginname %in% c("Tuerkei","Kosovo-Albaner","Bosnien/Herzegowina","Serbien","Kroatien","Bulgarien",
+                   "Ex-Jugoslawien","Makedonien","Albanien","Slowenien","Kosovo","Montenegro") ~ "Balkans",
+    coriginname %in% c("Polen","Russland","Rumaenien","Ukraine","Ungarn","Tschechien","Aserbaidschan",
+                      "Weissrussland","Lettland","Slowakei","Litauen","Armenien","Georgien","Moldawien",
+                      "Estland","Eastern Europe", "Kasachstan","Kirgistan", "Tadschikistan","Usbekistan",
+                      "Turkmenistan") ~ "Eastern Europe",
+    coriginname %in% c("Italien","Griechenland","Spanien","Oesterreich","Frankreich","USA","Grossbritannien",
+                   "Portugal","Niederlande","Schweiz","Kanada","Belgien","Schweden","Luxemburg","Daenemark",
+                   "Finnland","Irland","Australien","Norwegen","Neuseeland") ~ "Western Europe & Offshoots",
+    TRUE ~ "Rest of the World" # Default category for all other countries
+  ))
+
+#Check country grouping
+d %>%group_by(immigrants,corigin_group) %>%  summarise(count = n()) %>%
+  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+
+
+#Check Eastern Europe
+d %>%filter(migback == 2 & corigin_group=="Eastern Europe")%>%group_by(coriginname) %>%  summarise(count = n()) %>%  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+#Polen 25%, Kasachstan 23%, Russland 22%
+
+#Check Balkans
+d %>%filter(migback == 2 & corigin_group=="Balkans")%>%group_by(coriginname) %>%  summarise(count = n()) %>%  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+#Tuerkei 51%, Kosovo-Albaner 11%, Bosnien/Herzegowina 7%
+
+#Check Western Europe & Offshoots
+d %>%filter(migback == 2 & corigin_group=="Western Europe & Offshoots")%>%group_by(coriginname) %>%  summarise(count = n()) %>%  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+#Italien 33%, Griechenland 18%, Spanien 9%
+
+#Check Rest of the World
+d %>%filter(migback == 2 & corigin_group=="Rest of the World")%>%group_by(coriginname) %>%  summarise(count = n()) %>%  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+#Syrien 37%, Irak 9%, Afghanistan 7%
+
+#Overall country of origin 
+d %>%filter(migback == 2)%>%group_by(coriginname) %>%  summarise(count = n()) %>%  mutate(total = sum(count),  # Calculate total sum across all groups
+         percentage = (count / total) * 100) %>%  # Calculate percentage
+  arrange(desc(count)) %>%  select(-total) 
+#Tuerkei 11.7%, Polen 10.5%, Kasachstan 9.5%
+rm(migcorigin)
+```
+
+
+**Check final data set**
+
+```{r }
+glimpse(d)
+contents(d)
+summary(d)
+colnames(d)
+rm(d1,dcopy)
+```
+
+**Saving the data set**
+
+```{r }
+save(d, file = file.path("output", "master.RData"))
+#load("master.RData")
+#Select main specification variables for summary statistics and estimation
+d1 <-d #copy 
+d <- d %>% dplyr::select(pid, syear, ls, age, ysm, immigrants, male, mar, edu, inc, log_inc, empl, age_group,
+                         corigin_group, ysm_group) #select variables for estimation
+```
+
+# 1.5. Summary descriptive statistics pooled sample
+
+```{r }
+summary(d)
+#Add nice labels for each column
+table1::label(d$ls) <- "Life satisfaction"
+table1::label(d$age) <- "Age"
+table1::label(d$male) <- "Gender"
+table1::label(d$edu) <- "Education in years"
+table1::label(d$inc) <- "Annual income post taxation in EUR"
+table1::label(d$immigrants) <- "Migration background"
+table1::label(d$ysm) <- "Years since migration"
+table1::label(d$mar) <- "Marital status"
+table1::label(d$empl) <- "Employment status"
+table1::label(d$age_group) <- "Age group"
+table1::label(d$corigin_group) <- "Country group"
+table1::label(d$ysm_group) <- "YSM group"
+#Descriptive statistics for each group separately
+table1::table1(~ls+age+immigrants+ysm+male+edu+inc+mar+empl+age_group+corigin_group+ysm_group|immigrants, 
+               data = d)
+```
+
+# 1.6. Modify the data frame into panel data frame
+
+```{r }
+#Select variables
+d_panel <- d %>% dplyr::select(pid, syear, ls, age, ysm, immigrants, male, mar, edu, inc, log_inc, empl, age_group, corigin_group, ysm_group)
+#Removing labels
+d_panel <- remove_val_labels(d_panel)
+
+#Transform the dummy variables
+d_panel$immigrants <- ifelse(d_panel$immigrants == "Immigrants", 1, 0)
+table(d_panel$immigrants) #ok immigrants are 30434 obs like the desc stat previously
+d_panel$male <- ifelse(d_panel$male == "Male", 1, 0)
+table(d_panel$male) #ok males are 79981 obs like the desc stat previously
+d_panel$mar <- ifelse(d_panel$mar == "Married", 1, 0)
+table(d_panel$mar) #ok married are 115971 obs like the desc stat previously
+d_panel$empl <- ifelse(d_panel$empl == "Employed", 1, 0)
+table(d_panel$empl) #ok employed are 134171 obs like the desc stat previously
+
+#Inspect and transform into the panel data frame for estimation
+# View(d_panel)  # optional interactive inspection
+d_panel <- pdata.frame(d_panel, index=c("pid","syear"), drop.index=FALSE, row.names=TRUE)
+glimpse(d_panel)
+head(as.matrix(d_panel))
+```
+
+**Check dimensions and balance of the panel data**
+
+```{r }
+pdim(d_panel)
+#number of individuals = 28829, number of years = 21, number of total observations = 171212
+#pvar(d_panel) #takes too long 
+```
+
+**Descriptive statistics for panel data**
+
+```{r }
+#Rename variables for data table
+d_panel <- d_panel %>%
+  rename(Life_satisfaction = ls)%>%rename(Age = age)%>%rename(Migration_background = immigrants)%>%
+  rename(YSM = ysm)%>%rename(Gender = male)%>%rename(Education = edu)%>%rename(Income = inc)%>%
+  rename(Marital_status = mar)%>% rename(Employment_status = empl) %>%rename(Log_Income = log_inc)%>%
+  rename(Age_group = age_group)%>%rename(Country_group = corigin_group)%>%rename(YSM_group = ysm_group)
+
+xtsum(d_panel, variables = c("Life_satisfaction", "Age", "Migration_background","YSM","Gender","Education",
+                             "Income","Marital_status", "Employment_status"), id = "pid",  t = "syear", dec = 3) 
+
+#https://cran.r-project.org/web/packages/xtsum/vignettes/intro_to_xtsum.html#:~:text=xtsum%20is%20an%20R%20wrapper,%2C%20see%20(StataCorp%202023).
+```
+
+
+The overall and within are calculated over N = 171,212 person-years of data. 
+The between is calculated over n = 28,829 persons, 
+and the average number of years a person was observed in the data is T = 6.
+
+
+# 1.7. Some visualisations
+
+**Development of life satisfaction per age for both groups**
+
+```{r }
+#Calculate Average Life Satisfaction per age for Each Group
+avg_ls_age <- d %>%
+  group_by(age, immigrants) %>%
+  dplyr::summarize(avg_life_satisfaction = mean(ls, na.rm = TRUE), .groups = 'drop') 
+
+#Create the plot
+ggplot(avg_ls_age, aes(x = age, y = avg_life_satisfaction)) +
+  geom_line(aes(linetype = immigrants), size = 1, color = "black") +  # Draw lines with linetype based on immigrants
+  #geom_point(size = 2, color = "black") +  # Uncomment if points are needed
+  theme_minimal() +  # Use a minimal theme
+  labs(#title = "Development of Average Life Satisfaction per Age",
+       x = "Age",
+       y = "Average Life Satisfaction",
+       linetype = "Migration background") +  # Label for linetype legend
+  scale_x_continuous(breaks = seq(min(avg_ls_age$age), max(avg_ls_age$age), by = 5)) +
+  scale_linetype_manual(values = c("solid", "dashed"))  # Define linetypes
+```
+
+**Development of life satisfaction per ysm for immigrants**
+
+```{r }
+#First filter only immigrant population
+d_imm <- d%>%
+  filter(immigrants=="Immigrants") 
+
+#Calculate Average Life Satisfaction per age for Each Group
+avg_ls_ysm <- d_imm %>%
+  group_by(ysm) %>%
+  dplyr::summarize(avg_ls = mean(ls, na.rm = TRUE),
+                   avg_inc = mean(log_inc, na.rm = TRUE), .groups = 'drop')
+
+#Create the plot LS, YSM anc INC plotted
+min(avg_ls_ysm$avg_inc)
+max(avg_ls_ysm$avg_inc)
+
+ggplot(avg_ls_ysm, aes(x = ysm)) +
+  geom_line(aes(y = avg_ls, linetype = "Life Satisfaction"), color = "black", size = 1) +  # Life satisfaction line
+  geom_line(aes(y = avg_inc, linetype = "Income"), color = "black", size = 1) +  # Income line
+  theme_minimal() +
+  labs(#title = "Development of Average Life Satisfaction and Income by YSM",
+       x = "Years Since Migration",
+       y = "Average Value",
+       linetype = "Indicator") +
+  scale_x_continuous(breaks = seq(min(avg_ls_ysm$ysm, na.rm = TRUE), max(avg_ls_ysm$ysm, na.rm = TRUE), by = 3)) +
+  scale_linetype_manual(values = c("Life Satisfaction" = "solid", "Income" = "dashed"))
+
+#rm(avg_ls_age,avg_ls_ysm,d_imm)
+```
+
+### 2. Estimation
+
+## 2.1. Pooled OLS with cluster robust standard errors per pid
+
+# 2.1.1. Pooled OLS without controls
+
+```{r }
+colnames(d_panel)
+plm_model_1 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background), data = d_panel,  model = "pooling")
+summary(plm_model_1)
+
+ols_model_1 <- lm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background), data = d_panel)
+summary(ols_model_1)
+
+#Test for heteroscedasticity
+bptest(ols_model_1) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+clustered_se_1 <- vcovHC(plm_model_1, type = "HC1", cluster = "group") #type = "HC1"
+clustered_se_1.1 <-sqrt(diag(clustered_se_1))
+
+#Display coefficients with clustered standard errors
+coeftest(plm_model_1, vcov = clustered_se_1)
+```
+
+# 2.1.2 Pooled OLS with controls, adding gender and marital status
+
+```{r }
+plm_model_2 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status),
+                   data = d_panel,  model = "pooling")
+summary(plm_model_2)
+
+ols_model_2 <-lm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status),
+                   data = d_panel)
+summary(ols_model_2)
+
+#Test for heteroscedasticity
+bptest(ols_model_2) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+clustered_se_2 <- vcovHC(plm_model_2, type = "HC1", cluster = "group") #type = "HC1"
+clustered_se_2.1 <-sqrt(diag(clustered_se_2))
+
+
+#Display coefficients with clustered standard errors
+coeftest(plm_model_2, vcov = clustered_se_2)
+```
+
+# 2.1.3. Pooled OLS with controls, adding education and log income
+
+```{r }
+plm_model_3 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income, data = d_panel,  model = "pooling")
+
+summary(plm_model_3)
+
+ols_model_3 <- lm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income, data = d_panel)
+summary(ols_model_3)
+
+#Test for heteroscedasticity
+bptest(ols_model_3) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+clustered_se_3 <- vcovHC(plm_model_3, type = "HC1", cluster = "group") #type = "HC1"
+clustered_se_3.1 <-sqrt(diag(clustered_se_3))
+
+
+#Display coefficients with clustered standard errors
+coeftest(plm_model_3, vcov = clustered_se_3)
+```
+
+# 2.1.4. Pooled OLS with controls, adding employment status
+
+```{r }
+plm_model_4 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel,  model = "pooling")
+summary(plm_model_4)
+
+ols_model_4 <- lm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status), data = d_panel)
+summary(ols_model_4)
+
+#Test for heteroscedasticity
+bptest(ols_model_4) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+clustered_se_4 <- vcovHC(plm_model_4, type = "HC1", cluster = "group") #type = "HC1"
+clustered_se_4.1 <-sqrt(diag(clustered_se_4))
+
+#Display coefficients with clustered standard errors
+coeftest(plm_model_4, vcov = clustered_se_4)
+```
+
+## 2.2. Model comparison
+
+# 2.2.1. Likelihood ratio test for nested models and F - tests (same results)
+
+```{r }
+#Likelihood ratio test for nested models
+lrtest(ols_model_1, ols_model_2)
+#rejects the restricted model small p value, suggesting that Model 2, with more parameters, provides a significantly better fit to the data than Model 1
+lrtest(ols_model_2, ols_model_3) 
+#rejects the restricted model small p value, suggesting that Model 3, with more parameters, provides a significantly better fit to the data than Model 2
+lrtest(ols_model_3, ols_model_4)
+#rejects the restricted model small p value, suggesting that Model 4, with more parameters, provides a significantly better fit to the data than Model 3
+
+#Multiple Linear Restrictions F test
+myH0_2 <- c("as.factor(Gender)1  ","as.factor(Marital_status)1")
+linearHypothesis(ols_model_2, myH0_2, vcov=vcovHC(ols_model_2, type = "HC1", cluster = "group")) 
+#rejects the restricted model small p value, suggesting that Model 2, with more parameters, provides a significantly better fit to the data than Model 1
+
+myH0_3 <- c("Education", "Log_Income")
+linearHypothesis(ols_model_3, myH0_3, vcov=vcovHC(ols_model_3,type="HC1", cluster = "group"))
+#rejects the restricted model small p value, suggesting that Model 3, with more parameters, provides a significantly better fit to the data than Model 2
+
+myH0_4 <- c("as.factor(Employment_status)1")
+linearHypothesis(ols_model_4, myH0_4, vcov=vcovHC(ols_model_4,type="HC1", cluster = "group"))
+#rejects the restricted model small p value, suggesting that Model 4, with more parameters, provides a significantly better fit to the data than Model 3
+
+```
+
+# 2.2.2. Model comparison using information criteria
+
+```{r }
+#Lower AIC and BIC values and higher adjusted R-squared values suggest a better model fit.
+#Akaike information criterion (AIC):
+AIC(ols_model_1, ols_model_2) #model 2 has better fit, lower AIC
+AIC(ols_model_2, ols_model_3) #model 3 has better fit, lower AIC
+AIC(ols_model_3, ols_model_4) #model 4 has better fit, lower AIC
+
+#Bayes information criterion (BIC):
+BIC(ols_model_1, ols_model_2) #model 2 has better fit, lower BIC
+BIC(ols_model_2, ols_model_3) #model 3 has better fit, lower BIC
+BIC(ols_model_3, ols_model_4) #model 4 has better fit, lower BIC
+
+#The AIC for a simple Pooled OLS model and a Pooled OLS model with cluster-robust standard errors would be the same because the calculation of AIC is based on the model fit (likelihood) and does not consider the computation or adjustment of standard errors. The choice to use cluster-robust standard errors affects inference testing hypotheses about parameters, constructing confidence intervals) but not the estimation of the model parameters themselves or the model's likelihood.
+```
+
+## 2.3. Print the results for the multiple pooled ols models
+```{r }
+stargazer(plm_model_1, plm_model_2, plm_model_3, plm_model_4, type="text", 
+          title = "Pooled OLS Results",
+          se = list(clustered_se_1.1 , clustered_se_2.1, clustered_se_3.1, clustered_se_4.1),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants", "Male", "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction",
+          out = file.path("output", "models_ols.html"))
+```
+
+## 2.4. Random effects estimator (FGLS)
+
+# 2.4.1. Random effects estimator (FGLS) without controls
+
+```{r }
+re_1 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background), data = d_panel, model = "random")
+summary(re_1)
+
+#Test for heteroscedasticity
+bptest(re_1) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_1 <- vcovHC(re_1, type = "HC1", cluster = "group")
+robust_se_1.1 <-sqrt(diag(robust_se_1))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1)$coefficients, 4)
+coef_re_1 <- coef(re_1) 
+coeftest(re_1, vcov = robust_se_1)
+```
+
+# 2.4.2. Random effects estimator (FGLS) with controls, adding gender and marital status
+
+```{r }
+re_2 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status),
+                   data = d_panel, model = "random")
+summary(re_2)
+
+#Test for heteroscedasticity
+bptest(re_2) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_2 <- vcovHC(re_2, type = "HC1", cluster = "group")
+robust_se_2.1 <-sqrt(diag(robust_se_2))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_2)$coefficients, 4)
+coef_re_2 <- coef(re_2) 
+coeftest(re_2, vcov = robust_se_2)
+```
+
+# 2.4.3. Random effects estimator (FGLS) with controls, adding education and log income
+
+```{r }
+re_3 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income, data = d_panel, model = "random")
+summary(re_3)
+
+#Test for heteroscedasticity
+bptest(re_3) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_3 <- vcovHC(re_3, type = "HC1", cluster = "group")
+robust_se_3.1 <-sqrt(diag(robust_se_3))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_3)$coefficients, 4)
+coef_re_3 <- coef(re_3) 
+coeftest(re_3, vcov = robust_se_3)
+```
+
+# 2.4.4. Random effects estimator (FGLS) with controls, adding employment status
+
+```{r }
+re_4 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel, model = "random")
+summary(re_4)
+
+#Test for heteroscedasticity
+bptest(re_4) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_4 <- vcovHC(re_4, type = "HC1", cluster = "group")
+robust_se_4.1 <-sqrt(diag(robust_se_4))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4)$coefficients, 4)
+coef_re_4 <- coef(re_4) 
+coeftest(re_4, vcov = robust_se_4)
+
+```
+
+## 2.5. Print the results for the multiple RE models
+
+```{r }
+stargazer(re_1, re_2, re_3, re_4, type="text", 
+          title = "Random Effects Results",
+          se = list(robust_se_1.1, robust_se_2.1, robust_se_3.1, robust_se_4.1),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants", "Male", "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction",
+          out = file.path("output", "models_re.html"))
+```
+
+# 2.5.1 Testing for random effects: Breusch-Pagan Lagrange multiplier (LM)
+Test of individual and/or time effects for panel models.
+```{r }
+#Breusch-Pagan Lagrange Multiplier for random effects. Null is no panel effect (i.e. OLS better)
+#Model 1
+plmtest(plm_model_1, type=c("bp"))
+#p-value < 0.00000000000000022, reject the null H, proceed with RE model, POLS is not appropriate
+#Model 2
+plmtest(plm_model_2, type=c("bp"))
+#p-value < 0.00000000000000022, reject the null H, proceed with RE model, POLS is not appropriate
+#Model 3
+plmtest(plm_model_3, type=c("bp"))
+#p-value < 0.00000000000000022, reject the null H, proceed with RE model, POLS is not appropriate
+#Model 4
+plmtest(plm_model_4, type=c("bp"))
+#p-value < 0.00000000000000022, reject the null H, proceed with RE model, POLS is not appropriate
+
+#The LM test helps you decide between a random effects regression and a simple OLS regression. The null hypothesis in the LM test is that variances across entities is zero. This is, no  significant difference across units (i.e. no panel effect).
+```
+
+
+## 2.6. Interpretation of the coefficients all models
+```{r }
+#Average Marginal Effect (AME)
+#M1 OLS
+avg_ols_model_1 <- avg_slopes(ols_model_1, vcov=vcovHC(ols_model_1, type = "HC1", cluster = "group"))
+avg_ols_model_1
+#M2 OLS
+avg_ols_model_2 <- avg_slopes(ols_model_2, vcov=vcovHC(ols_model_2, type = "HC1", cluster = "group"))
+avg_ols_model_2
+#M3 OLS
+avg_ols_model_3 <- avg_slopes(ols_model_3, vcov=vcovHC(ols_model_3, type = "HC1", cluster = "group"))
+avg_ols_model_3
+#M4 OLS
+avg_ols_model_4 <- avg_slopes(ols_model_4, vcov=vcovHC(ols_model_4, type = "HC1", cluster = "group"))
+avg_ols_model_4
+
+#M1 RE
+avg_re_1 <- avg_slopes(re_1, vcov=vcovHC(re_1, type = "HC1", cluster = "group"))
+avg_re_1
+#M2 RE
+avg_re_2 <- avg_slopes(re_2, vcov=vcovHC(re_2, type = "HC1", cluster = "group"))
+avg_re_2
+#M3 RE
+avg_re_3 <- avg_slopes(re_3, vcov=vcovHC(re_3, type = "HC1", cluster = "group"))
+avg_re_3
+#M4 RE
+avg_re_4 <- avg_slopes(re_4, vcov=vcovHC(re_4, type = "HC1", cluster = "group"))
+avg_re_4
+
+#Marginal Effect at User-Specified Values
+meusv <- function(a, b, c)
+{
+  answer <- a + (2*b)/100*c
+  answer
+}
+
+#RE1 - AGE
+#AGE marginal effects at 25 years
+a_re_age_1 <- coef_re_1[2]
+b_re_age_1 <- coef_re_1[3]
+meusv_re_1.25a <-meusv(a = a_re_age_1 , b = b_re_age_1, c = 25)
+meusv_re_1.25a #-0.01570644
+#AGE marginal effects at 55 years
+meusv_re_1.55 <-meusv(a = a_re_age_1 , b = b_re_age_1, c = 55)
+meusv_re_1.55 #0.001552 
+
+#RE4 - AGE
+#AGE marginal effects at 25 years
+a_re_age_4 <- coef_re_4[2]
+b_re_age_4 <- coef_re_4[3]
+meusv_re_4.25a <-meusv(a = a_re_age_4 , b = b_re_age_4, c = 25)
+meusv_re_4.25a #-0.0430412 
+#AGE marginal effects at 55 years
+meusv_re_4.55 <-meusv(a = a_re_age_4 , b = b_re_age_4, c = 55)
+meusv_re_4.55 #0.003903462 
+
+#RE1 - YSM
+#YSM marginal effects at 1 year
+a_re_1 <- coef_re_1[4]
+b_re_1 <- coef_re_1[5]
+meusv_re_1.1 <-meusv(a = a_re_1 , b =b_re_1, c = 1)
+meusv_re_1.1 #0.003279467
+#YSM marginal effects at 5 years
+meusv_re_1.5 <-meusv(a = a_re_1 , b =b_re_1, c = 5)
+meusv_re_1.5 #-0.0009174356
+#YSM marginal effects at 10 years
+meusv_re_1.10 <-meusv(a = a_re_1 , b =b_re_1, c = 10)
+meusv_re_1.10 #-0.006163563  
+#YSM marginal effects at 15 years
+meusv_re_1.15 <-meusv(a = a_re_1 , b =b_re_1, c = 15)
+meusv_re_1.15 #-0.01140969 
+#YSM marginal effects at 20 years
+meusv_re_1.20 <-meusv(a = a_re_1 , b =b_re_1, c = 20)
+meusv_re_1.20 #-0.01665582
+#YSM marginal effects at 30 years
+meusv_re_1.30 <-meusv(a = a_re_1 , b =b_re_1, c = 30)
+meusv_re_1.30 #-0.02714807
+#YSM marginal effects at 40 years
+meusv_re_1.40 <-meusv(a = a_re_1 , b =b_re_1, c = 40)
+meusv_re_1.40 #-0.03764033 
+
+#RE4 - YSM
+#YSM marginal effects at 1 year
+a_re_4 <- coef_re_4[4]
+b_re_4 <- coef_re_4[5]
+meusv_re_4.1 <-meusv(a = a_re_4 , b =b_re_4, c = 1)
+meusv_re_4.1  #-0.01785815
+#YSM marginal effects at 5 years
+meusv_re_4.5 <-meusv(a = a_re_4 , b =b_re_4, c = 5)
+meusv_re_4.5 #-0.01876718
+#YSM marginal effects at 10 years
+meusv_re_4.10 <-meusv(a = a_re_4 , b =b_re_4, c = 10)
+meusv_re_4.10 #-0.01990347
+#YSM marginal effects at 15 years
+meusv_re_4.15<-meusv(a = a_re_4 , b =b_re_4, c = 15)
+meusv_re_4.15 #-0.02103977
+#YSM marginal effects at 20 years
+meusv_re_4.20 <-meusv(a = a_re_4 , b =b_re_4, c = 20)
+meusv_re_4.20 #-0.02217606 
+#YSM marginal effects at 30 years
+meusv_re_4.30 <-meusv(a = a_re_4 , b =b_re_4, c = 30)
+meusv_re_4.30 #-0.02444864
+#YSM marginal effects at 40 years
+meusv_re_4.40 <-meusv(a = a_re_4 , b =b_re_4, c = 40)
+meusv_re_4.40 #-0.02672123
+
+#Turning points
+#AGE
+#RE model 1
+coef_re_1
+#RE model 4
+coef_re_4
+#AGE
+#RE model 1
+min_age_1 <- abs(coef_re_1[2]/(2*coef_re_1[3])*100)
+min_age_1 #52.30219 
+#RE model 4
+min_age_4 <- abs(coef_re_4[2]/(2*coef_re_4[3])*100)
+min_age_4 #52.50549 
+
+#YSM
+#RE model 1
+max_ysm_1 <- abs(coef_re_1[4]/(2*coef_re_1[5])*100)
+max_ysm_1 #4.125607
+
+#YSM parity
+#Solving the quadratic equation
+#RE model 1
+a_1 <-coef_re_1[5]/100
+b_1 <-coef_re_1[4]
+c_1 <-coef_re_1[6]
+quad <- function(a, b, c)
+{
+  a <- as.complex(a)
+  answer <- c((-b + sqrt(b^2 - 4 * a * c)) / (2 * a),
+              (-b - sqrt(b^2 - 4 * a * c)) / (2 * a))
+  if(all(Im(answer) == 0)) answer <- Re(answer)
+  if(answer[1] == answer[2]) return(answer[1])
+  answer
+}
+ysm_1 <- quad(a = a_1, b = b_1, c = c_1)
+ysm_1 #27.14247 
+age_parity_1<-ysm_1+25 #25 start of immigration year 1
+age_parity_1 #52.142467 
+
+#RE model 4
+a_4 <-coef_re_4[5]/100
+b_4 <-coef_re_4[4]
+c_4 <-coef_re_4[6]
+
+ysm_4 <- quad(a = a_4, b = b_4, c = c_4)
+ysm_4 #32.96849 
+
+age_parity_4<-ysm_4+25 #25 start of immigration year 1
+age_parity_4 #57.96849 
+
+#Difference LS natives and immigrants at different values of YSM
+diff <- function(a, b, c, d)
+{
+  answer <- a + b*c + (d/100)*(c^2)
+  answer
+}
+
+#RE1
+a_1_diff <-coef_re_1[6]
+b_1_diff <-coef_re_1[4]
+d_1_diff <-coef_re_1[5]
+
+#YSM marginal effects at 1 year
+diff_re_1.1 <-  diff(a = a_1_diff, b = b_1_diff, c = 1, d=d_1_diff)
+round(diff_re_1.1,3) #0.273 
+#YSM marginal effects at 5 years
+diff_re_1.5 <-  diff(a = a_1_diff, b = b_1_diff, c = 5, d=d_1_diff)
+round(diff_re_1.5,3) #0.278 
+#YSM marginal effects at 10 years
+diff_re_1.10 <-  diff(a = a_1_diff, b = b_1_diff, c = 10, d=d_1_diff)
+round(diff_re_1.10,3) #0.26 
+#YSM marginal effects at 15 years
+diff_re_1.15 <-  diff(a = a_1_diff, b = b_1_diff, c = 15, d=d_1_diff)
+round(diff_re_1.15,3) #0.216 
+#YSM marginal effects at 20 years
+diff_re_1.20 <-  diff(a = a_1_diff, b = b_1_diff, c = 20, d=d_1_diff)
+round(diff_re_1.20,3) #0.146
+#YSM marginal effects at 30 years
+diff_re_1.30 <-  diff(a = a_1_diff, b = b_1_diff, c = 30, d=d_1_diff)
+round(diff_re_1.30,3) #-0.073 
+#YSM marginal effects at 40 years
+diff_re_1.40 <-  diff(a = a_1_diff, b = b_1_diff, c = 40, d=d_1_diff)
+round(diff_re_1.40,3) #-0.397
+
+#RE4
+a_4_diff <-coef_re_4[6]
+b_4_diff <-coef_re_4[4]
+d_4_diff <-coef_re_4[5]
+
+#YSM marginal effects at 1 year
+diff_re_4.1 <-  diff(a = a_4_diff, b = b_4_diff, c = 1, d=d_4_diff)
+round(diff_re_4.1,3) #0.687  
+#YSM marginal effects at 5 years
+diff_re_4.5 <-  diff(a = a_4_diff, b = b_4_diff, c = 5, d=d_4_diff)
+round(diff_re_4.5,3) #0.614  
+#YSM marginal effects at 10 years
+diff_re_4.10 <-  diff(a = a_4_diff, b = b_4_diff, c = 10, d=d_4_diff)
+round(diff_re_4.10,3) #0.517  
+#YSM marginal effects at 15 years
+diff_re_4.15 <-  diff(a = a_4_diff, b = b_4_diff, c = 15, d=d_4_diff)
+round(diff_re_4.15,3) #0.216 
+#YSM marginal effects at 20 years
+diff_re_4.20 <-  diff(a = a_4_diff, b = b_4_diff, c = 20, d=d_4_diff)
+round(diff_re_4.20,3) #0.307 
+#YSM marginal effects at 30 years
+diff_re_4.30 <-  diff(a = a_4_diff, b = b_4_diff, c = 30, d=d_4_diff)
+round(diff_re_4.30,3) #0.074  
+#YSM marginal effects at 40 years
+diff_re_4.40 <-  diff(a = a_4_diff, b = b_4_diff, c = 40, d=d_4_diff)
+round(diff_re_4.40,3) #-0.182
+```
+
+## 2.7. Fixed effects estimator
+
+# 2.7.1. Fixed effects estimator without controls
+
+```{r }
+fe_1 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background), data = d_panel, model = "within")
+summary(fe_1)
+
+#Test for heteroscedasticity
+bptest(fe_1) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_fe_1 <- vcovHC(fe_1, type = "HC1", cluster = "group")
+robust_se_fe_1.1 <-sqrt(diag(robust_se_fe_1))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1)$coefficients, 4)
+coef_fe_1 <- coef(fe_1) 
+coeftest(fe_1, vcov = robust_se_fe_1)
+```
+# 2.7.2. Fixed effects estimator with controls, adding gender and marital status
+
+```{r }
+fe_2 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status),
+                   data = d_panel, model = "within")
+summary(fe_2)
+
+#Test for heteroscedasticity
+bptest(fe_2) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_fe_2 <- vcovHC(fe_2, type = "HC1", cluster = "group")
+robust_se_fe_2.1 <-sqrt(diag(robust_se_fe_2))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_2)$coefficients, 4)
+coef_fe_2 <- coef(fe_2) 
+coeftest(fe_2, vcov = robust_se_fe_2)
+```
+
+# 2.7.3. Fixed effects estimator with controls, adding education and log income
+
+```{r }
+fe_3 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income, data = d_panel, model = "within")
+summary(fe_3)
+
+#Test for heteroscedasticity
+bptest(fe_3) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_fe_3 <- vcovHC(fe_3, type = "HC1", cluster = "group")
+robust_se_fe_3.1 <-sqrt(diag(robust_se_fe_3))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_3)$coefficients, 4)
+coef_fe_3 <- coef(fe_3) 
+coeftest(fe_3, vcov = robust_se_fe_3)
+```
+
+# 2.7.4. Fixed effects estimator with controls, adding employment status
+
+```{r }
+fe_4 <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel, model = "within")
+summary(fe_4)
+
+#Test for heteroscedasticity
+bptest(fe_4) #small p-value, heteroscedasticity present use cluster-robust SE per pid
+
+#Compute clustered standard errors
+robust_se_fe_4 <- vcovHC(fe_4, type = "HC1", cluster = "group")
+robust_se_fe_4.1 <-sqrt(diag(robust_se_fe_4))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4)$coefficients, 4)
+coef_fe_4 <- coef(fe_4) 
+coeftest(fe_4, vcov = robust_se_fe_4)
+```
+
+## 2.7.5 Print the results for the multiple FE models
+
+```{r }
+stargazer(fe_1, fe_2, fe_3, fe_4, type="text", 
+          title = "Fixed Effects Results",
+          se = list(robust_se_fe_1.1, robust_se_fe_2.1, robust_se_fe_3.1, robust_se_fe_4.1),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                                "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction",
+          out = "models_fe.html")
+
+# Calculate the variance of the dependent variable for each individual
+individual_variances <- d_panel %>%
+  group_by(pid) %>%
+  dplyr::summarize(variance = var(Life_satisfaction)) %>%
+  ungroup()
+
+# Count how many individuals have a variance of 0
+no_variation_count <- sum(individual_variances$variance == 0, na.rm = TRUE)
+
+# Print the count
+print(no_variation_count) #2324 pid /28829 pid total = cca 8.061327% of individual pids
+```
+
+## 2.7.6 Hausman test FE vs. RE
+
+```{r }
+#Robust SE Hausman test Model 1
+diff_coefs_1 <- coef_fe_1 - coef_re_1[2:5]
+robust_se_1_del<- robust_se_1[, c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)" )]
+robust_se_1_del<- robust_se_1_del[c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)"),]
+diff_var_1 <- robust_se_fe_1 - robust_se_1_del
+
+#Calculate t statistics and p-value
+H_1 <- t(diff_coefs_1) %*% solve(diff_var_1) %*% diff_coefs_1
+H_1
+df_1 <- length(diff_coefs_1) # Adjust this based on the specific comparison
+df_1
+p_value_1 <- pchisq(H_1, df_1, lower.tail = FALSE)
+p_value_1 #0.069393 very weak evidence to not reject the the null hypothesis of the Hausman test, random effects model appears to be an appropriate choice at 5% level
+
+
+#Robust SE Hausman test Model 2
+coef_re_2_del <- coef_re_2[-(1)]
+coef_re_2_del <- coef_re_2_del[-(5:6)]
+diff_coefs_2 <- coef_fe_2 - coef_re_2_del
+robust_se_2_del<- robust_se_2[, c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)", "as.factor(Marital_status)1" )]
+robust_se_2_del<- robust_se_2_del[c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)", "as.factor(Marital_status)1"), ]
+diff_var_2 <- robust_se_fe_2 - robust_se_2_del
+
+#Calculate t statistics and p-value
+H_2 <- t(diff_coefs_2) %*% solve(diff_var_2) %*% diff_coefs_2
+H_2
+df_2 <- length(diff_coefs_2) # Adjust this based on the specific comparison
+df_2
+p_value_2 <- pchisq(H_2, df_2, lower.tail = FALSE)
+p_value_2 #0.0000000000000667829 very small p value reject the null, FE is the appropriate choice.
+
+
+#Robust SE Hausman test Model 3
+coef_re_3_del <-coef_re_3[-(1)]
+coef_re_3_del <-coef_re_3_del[-(5:6)]
+diff_coefs_3 <- coef_fe_3 - coef_re_3_del
+robust_se_3_del<- robust_se_3[, c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)","as.factor(Marital_status)1", "Education","Log_Income")]
+robust_se_3_del<- robust_se_3_del[c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)", "as.factor(Marital_status)1", "Education","Log_Income"), ]
+diff_var_3 <- robust_se_fe_3 - robust_se_3_del
+
+#Calculate t statistics and p-value
+H_3 <- t(diff_coefs_3) %*% solve(diff_var_3) %*% diff_coefs_3
+H_3
+df_3 <- length(diff_coefs_3) # Adjust this based on the specific comparison
+df_3
+p_value_3 <- pchisq(H_3, df_3, lower.tail = FALSE)
+p_value_3 #0 very small p value reject the null, FE is the appropriate choice.
+
+
+#Robust SE Hausman test Model 4
+coef_re_4_del <-coef_re_4[-(1)]
+coef_re_4_del <-coef_re_4_del[-(5:6)]
+diff_coefs_4 <- coef_fe_4 - coef_re_4_del
+robust_se_4_del<- robust_se_4[, c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)","as.factor(Marital_status)1", "Education","Log_Income", "as.factor(Employment_status)1")]
+robust_se_4_del<- robust_se_4_del[c("Age", "I((Age^2)/100)", "YSM", "I((YSM^2)/100)", "as.factor(Marital_status)1", "Education","Log_Income", "as.factor(Employment_status)1"), ]
+diff_var_4 <- robust_se_fe_4 - robust_se_4_del
+
+#Calculate t statistics and p-value
+H_4 <- t(diff_coefs_4) %*% solve(diff_var_4) %*% diff_coefs_4
+H_4
+df_4 <- length(diff_coefs_4) # Adjust this based on the specific comparison
+df_4
+p_value_4 <- pchisq(H_4, df_4, lower.tail = FALSE)
+p_value_4 #0 very small p value reject the null, FE is the appropriate choice.
+```
+
+### 3. Prediction for OLS and RE models
+
+## 3.1. Prediction for all OLS models
+
+# 3.1.1. Predicted LS per age without controls - OLS model 1
+
+**Create the table**
+```{r }
+# Create a data frame for natives
+natives_df_1 <- data.frame(
+  Age = 25:65,
+  YSM = rep(0, 41),
+  Migration_background = rep(0, 41))
+
+# Create a data frame for immigrants
+immigrants_df_1 <- data.frame(
+  Age = 25:65,
+  YSM = 1:41,
+  Migration_background = rep(1, 41))
+
+# Combine the two data frames
+combined_df_1 <- rbind(natives_df_1, immigrants_df_1)
+```
+
+**Predict the LS for the model OLS_1 without controls**
+```{r }
+combined_df_1$p_pred_ols <- predict(ols_model_1, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_1$p_pred_plm <- predict(plm_model_1, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_1$diff_pred <-combined_df_1$p_pred_ols-combined_df_1$p_pred_plm
+```
+
+**Plot the prediction for the model OLS_1 without controls**
+```{r }
+#Plot the prediction OLS_1 model
+
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_ols <- ggplot(combined_df_1, aes(x = Age, y = p_pred_ols, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_ols
+```
+
+# 3.1.2. Predicted LS per age - OLS model 2
+
+**Create the table**
+```{r }
+# Create a data frame for natives
+natives_df_2 <- data.frame(
+  Age = 25:65,
+  YSM = rep(0, 41),
+  Migration_background = rep(0, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)))
+
+# Create a data frame for immigrants
+immigrants_df_2 <- data.frame(
+  Age = 25:65,
+  YSM = 1:41,
+  Migration_background = rep(1, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)))
+
+# Combine the two data frames
+combined_df_2 <- rbind(natives_df_2, immigrants_df_2)
+```
+
+**Predict the LS for the model OLS_2**
+```{r }
+combined_df_2$p_pred_ols <- predict(ols_model_2, newdata = combined_df_2,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_2$p_pred_plm <- predict(plm_model_2, newdata = combined_df_2,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_2$diff_pred <-combined_df_2$p_pred_ols-combined_df_2$p_pred_plm
+```
+
+
+**Plot the prediction OLS_2 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p2_ols <- ggplot(combined_df_2, aes(x = Age, y = p_pred_ols, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p2_ols
+```
+
+
+# 3.1.3. Predicted LS per age - OLS model 3
+
+**Create the table**
+```{r }
+# Create a data frame for natives
+natives_df_3 <- data.frame(
+  Age = 25:65,
+  YSM = rep(0, 41),
+  Migration_background = rep(0, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income))
+
+# Create a data frame for immigrants
+immigrants_df_3 <- data.frame(
+  Age = 25:65,
+  YSM = 1:41,
+  Migration_background = rep(1, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income))
+
+# Combine the two data frames
+combined_df_3 <- rbind(natives_df_3, immigrants_df_3)
+```
+
+**Predict the LS for the model OLS_3**
+```{r }
+combined_df_3$p_pred_ols <- predict(ols_model_3, newdata = combined_df_3,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_3$p_pred_plm <- predict(plm_model_3, newdata = combined_df_3,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_3$diff_pred <-combined_df_3$p_pred_ols-combined_df_3$p_pred_plm
+
+```
+
+
+**Plot the prediction OLS_3 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p3_ols <- ggplot(combined_df_3, aes(x = Age, y = p_pred_ols, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p3_ols
+```
+
+# 3.1.4. Predicted LS per age - OLS model 4
+
+**Create the table**
+```{r }
+# Create a data frame for natives
+natives_df_4 <- data.frame(
+  Age = 25:65,
+  YSM = rep(0, 41),
+  Migration_background = rep(0, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income),
+  Employment_status = factor(1, levels = c(0, 1)))
+
+# Create a data frame for immigrants
+immigrants_df_4 <- data.frame(
+  Age = 25:65,
+  YSM = 1:41,
+  Migration_background = rep(1, 41),
+  Gender = factor(1, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income),
+  Employment_status = factor(1, levels = c(0, 1)))
+
+# Combine the two data frames
+combined_df_4 <- rbind(natives_df_4, immigrants_df_4)
+```
+
+**Predict the LS for the model OLS_4**
+```{r }
+combined_df_4$p_pred_ols <- predict(ols_model_4, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_4$p_pred_plm <- predict(plm_model_4, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_4$diff_pred <-combined_df_4$p_pred_ols-combined_df_4$p_pred_plm
+```
+
+
+**Plot the prediction OLS_4 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_ols <- ggplot(combined_df_4, aes(x = Age, y = p_pred_ols, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_ols
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+**Combine all plots OLS models 1-4 **
+```{r }
+# Combine the plots
+combined_plot_ols <- (p1_ols + ggtitle("POLS Model 1")) + 
+                        (p2_ols + ggtitle("POLS Model 2")) + 
+                        (p3_ols + ggtitle("POLS Model 3")) + 
+                        (p4_ols + ggtitle("POLS Model 4")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_ols #run it in the console
+#ggsave("combined_plot_ols.pdf", combined_plot_ols)
+```
+
+
+## 3.2. Prediction for all RE models
+
+# 3.2.1. Predict the LS for the model RE_1 without controls
+```{r }
+#the data is the same as the OLS model 1
+combined_df_1$p_pred_re <- predict(re_1, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_1$diff_pred_re <-combined_df_1$p_pred_ols-combined_df_1$p_pred_re
+```
+
+**Plot the prediction RE_1 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_re <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_re
+```
+
+
+
+
+# 3.2.2. Predict the LS for the model RE_2
+```{r }
+
+combined_df_2$p_pred_re <- predict(re_2, newdata = combined_df_2,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_2$diff_pred_re <-combined_df_2$p_pred_ols-combined_df_2$p_pred_re
+```
+
+**Plot the prediction RE_2 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p2_re <- ggplot(combined_df_2, aes(x = Age, y = p_pred_re, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p2_re
+```
+
+# 3.2.3. Predict the LS for the model RE_3
+```{r }
+combined_df_3$p_pred_re <- predict(re_3, newdata = combined_df_3,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_3$diff_pred_re <-combined_df_3$p_pred_ols-combined_df_3$p_pred_re
+```
+
+**Plot the prediction RE_3 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p3_re <- ggplot(combined_df_3, aes(x = Age, y = p_pred_re, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p3_re
+```
+
+
+# 3.2.4. Predict the LS for the model RE_4
+```{r }
+combined_df_4$p_pred_re <- predict(re_4, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+combined_df_4$diff_pred_re <-combined_df_4$p_pred_ols-combined_df_4$p_pred_re
+```
+
+**Plot the prediction RE_4 model**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_re <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+
+p4_re
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+
+**Combine all plots RE models 1-4 **
+```{r }
+# Combine the plots
+combined_plot_re <- (p1_re + ggtitle("RE Model 1")) + 
+                        (p2_re + ggtitle("RE Model 2")) + 
+                        (p3_re + ggtitle("RE Model 3")) + 
+                        (p4_re + ggtitle("RE Model 4")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_re #run it in the console
+#ggsave("combined_plot_re.pdf", combined_plot_re)
+```
+
+### 4. Gender analysis
+
+**Split the data into male and female**
+```{r }
+d_panel_f <- d_panel %>% filter(Gender==0) #females 91231 same as DS
+d_panel_m <- d_panel %>% filter(Gender==1) #males 79981 same as DS
+```
+
+## 4.1. Female estimation
+```{r data}
+#Estimate model 1 no controls
+re_1_f <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_f, model = "random")
+summary(re_1_f)
+
+#Compute clustered standard errors
+robust_se_1_f <- vcovHC(re_1_f, type = "HC1", cluster = "group")
+robust_se_1.1_f <-sqrt(diag(robust_se_1_f))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_f)$coefficients, 4)
+coef_re_1_f <- coef(re_1_f) 
+coeftest(re_1_f, vcov = robust_se_1_f)
+
+#Estimate model 4 with full set of controls
+re_4_f <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_f, model = "random")
+summary(re_4_f)
+
+#Compute clustered standard errors
+robust_se_4_f <- vcovHC(re_4_f, type = "HC1", cluster = "group")
+robust_se_4.1_f <-sqrt(diag(robust_se_4_f))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_f)$coefficients, 4)
+coef_re_4_f <- coef(re_4_f) 
+coeftest(re_4_f, vcov = robust_se_4_f)
+```
+
+## 4.2. Male estimation
+```{r }
+#Estimate model 1 no controls
+re_1_m <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_m, model = "random")
+summary(re_1_m)
+
+#Compute clustered standard errors
+robust_se_1_m <- vcovHC(re_1_m, type = "HC1", cluster = "group")
+robust_se_1.1_m <-sqrt(diag(robust_se_1_m))
+
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_m)$coefficients, 4)
+coef_re_1_m <- coef(re_1_m) 
+coeftest(re_1_m, vcov = robust_se_1_m)
+
+#Estimate model 4 with full set of controls
+re_4_m <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_m, model = "random")
+summary(re_4_m)
+
+#Compute clustered standard errors
+robust_se_4_m <- vcovHC(re_4_m, type = "HC1", cluster = "group")
+robust_se_4.1_m <-sqrt(diag(robust_se_4_m))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_m)$coefficients, 4)
+coef_re_4_m <- coef(re_4_m) 
+coeftest(re_4_m, vcov = robust_se_4_m)
+```
+
+## 4.2. Print the results for both genders and both models
+```{r }
+stargazer(re_1_f, re_4_f, re_1_m, re_4_m, type="text", 
+          title = "Random Effects Results",
+          se = list(robust_se_1.1_f, robust_se_4.1_f, robust_se_1.1_m, robust_se_4.1_m),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants", "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction", column.labels =c("Female M1", "Female M4", 
+                                                               "Male M1", "Male M4"),
+          out = "models_re_gender.html")
+```
+
+## 4.3. Interpretation of the coefficients RE models - gender analysis
+
+**Interpretation for females**
+```{r }
+#RE model 1
+coef_re_1_f
+#RE model 4
+coef_re_4_f
+#Age
+#RE model 1
+min_age_1_f <- -coef_re_1_f[2]/(2*coef_re_1_f[3])*100
+min_age_1_f #55.26765 
+#RE model 4
+min_age_4_f <- -coef_re_4_f[2]/(2*coef_re_4_f[3])*100
+min_age_4_f #51.36657 
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_f <-coef_re_1_f[5]/100
+b_1_f<-coef_re_1_f[4]
+c_1_f<-coef_re_1_f[6]
+
+ysm_1_f <- quad(a = a_1_f, b = b_1_f, c = c_1_f)
+ysm_1_f #25.096467  
+age_parity_1_f<-ysm_1_f+25 #25 start of immigration year 1
+age_parity_1_f #50.09647  
+
+#RE model 4
+a_4_f <-coef_re_4_f[5]/100
+b_4_f <-coef_re_4_f[4]
+c_4_f <-coef_re_4_f[6]
+
+ysm_4_f <- quad(a = a_4_f, b = b_4_f, c = c_4_f)
+ysm_4_f #29.00358  
+
+age_parity_4_f<-ysm_4_f+25 #25 start of immigration year 1
+age_parity_4_f #54.00358   
+
+```
+
+**Interpretation for males**
+```{r }
+#RE model 1
+coef_re_1_m
+#RE model 4
+coef_re_4_m
+#Age
+#RE model 1
+min_age_1_m <- -coef_re_1_m[2]/(2*coef_re_1_m[3])*100
+min_age_1_m #53.35807 
+#RE model 4
+min_age_4_m <- -coef_re_4_m[2]/(2*coef_re_4_m[3])*100
+min_age_4_m #51.11196 
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_m <-coef_re_1_m[5]/100
+b_1_m<-coef_re_1_m[4]
+c_1_m<-coef_re_1_m[6]
+
+ysm_1_m <- quad(a = a_1_m, b = b_1_m, c = c_1_m)
+ysm_1_m #29.71862   
+age_parity_1_m<-ysm_1_m+25 #25 start of immigration year 1
+age_parity_1_m #54.71862   
+
+#RE model 4
+a_4_m <-coef_re_4_m[5]/100
+b_4_m <-coef_re_4_m[4]
+c_4_m <-coef_re_4_m[6]
+
+ysm_4_m <- quad(a = a_4_m, b = b_4_m, c = c_4_m)
+ysm_4_m #41.02364   
+
+age_parity_4_m<-ysm_4_m+25 #25 start of immigration year 1
+age_parity_4_m #66.02364    
+
+```
+
+
+
+## 4.4. Predict the LS per gender 
+
+# 4.4.1. Prediction model 1
+
+**Predict the LS for females**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_f <- predict(re_1_f, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+
+**Plot the prediction RE_1 model females**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_f <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_f, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_f
+```
+
+**Predict the LS for males**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_m <- predict(re_1_m, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+**Plot the prediction RE_1 model males**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_m <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_m, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_m
+```
+
+# 4.4.2. Prediction model 4
+
+**Predict the LS for females**
+```{r }
+#Create data for female default simulated data is for males
+# Create a data frame for natives female
+natives_df_4_f <- data.frame(
+  Age = 25:65,
+  YSM = rep(0, 41),
+  Migration_background = rep(0, 41),
+  Gender = factor(0, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income),
+  Employment_status = factor(1, levels = c(0, 1)))
+
+# Create a data frame for immigrants female
+immigrants_df_4_f <- data.frame(
+  Age = 25:65,
+  YSM = 1:41,
+  Migration_background = rep(1, 41),
+  Gender = factor(0, levels = c(0, 1)),
+  Marital_status = factor(1, levels = c(0, 1)),
+  Education = mean(d_panel$Education),
+  Log_Income = mean(d_panel$Log_Income),
+  Employment_status = factor(1, levels = c(0, 1)))
+
+# Combine the two data frames
+combined_df_4_f <- rbind(natives_df_4_f, immigrants_df_4_f)
+
+# Predict the LS for females
+combined_df_4_f$p_pred_re_f <- predict(re_4_f, newdata = combined_df_4_f,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model females**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_f <- ggplot(combined_df_4_f, aes(x = Age, y = p_pred_re_f, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_f
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+**Predict the LS for males**
+```{r }
+#The data is already created for males
+combined_df_4$p_pred_re_m <- predict(re_4_m, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model males**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_m <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re_m, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_m 
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1_f, p1_m, p4_f, p4_m, nrow = 2)
+
+# Combine the plots
+combined_plot_gender <- (p1_f + ggtitle("Female Model 1")) + 
+                        (p1_m + ggtitle("Male Model 1")) + 
+                        (p4_f + ggtitle("Female Model 4")) + 
+                        (p4_m + ggtitle("Male Model 4")) + 
+  plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+combined_plot_gender #run it in the console
+#ggsave("combined_plot_gender.pdf", combined_plot_gender)
+
+```
+
+### 5. Country of origin analysis
+
+**Split the data per country of origin**
+```{r }
+colnames(d_panel)
+unique(d_panel$Country_group) #"Germany" ,"Eastern Europe", "Balkans", 
+#"Western Europe & Offshoots","Rest of the World" 
+d_panel_ee <- d_panel %>% filter(Country_group=="Germany" | Country_group=="Eastern Europe")
+#140778+12630 =153408 same as DS
+d_panel_we <- d_panel %>% filter(Country_group=="Germany" | Country_group=="Western Europe & Offshoots") 
+#140778+4100 =144878 same as DS
+d_panel_b <- d_panel %>% filter(Country_group=="Germany" | Country_group=="Balkans")
+#140778+6954 =147732 same as DS
+d_panel_r <- d_panel %>% filter(Country_group=="Germany" | Country_group=="Rest of the World")
+#140778+6750 =147528 same as DS
+```
+
+## 5.1. Eastern Europe estimation
+```{r }
+#Estimate model 1 no controls
+re_1_ee <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_ee, model = "random")
+summary(re_1_ee)
+
+#Compute clustered standard errors
+robust_se_1_ee <- vcovHC(re_1_ee, type = "HC1", cluster = "group")
+robust_se_1.1_ee <-sqrt(diag(robust_se_1_ee))
+
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_ee)$coefficients, 4)
+coef_re_1_ee <- coef(re_1_ee) 
+coeftest(re_1_ee, vcov = robust_se_1_ee)
+
+#Estimate model 4 with full set of controls
+re_4_ee <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)++as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_ee, model = "random")
+summary(re_4_ee)
+
+#Compute clustered standard errors
+robust_se_4_ee <- vcovHC(re_4_ee, type = "HC1", cluster = "group")
+robust_se_4.1_ee <-sqrt(diag(robust_se_4_ee))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_ee)$coefficients, 4)
+coef_re_4_ee <- coef(re_4_ee) 
+coeftest(re_4_ee, vcov = robust_se_4_ee)
+```
+
+## 5.2. Western Europe estimation
+```{r }
+#Estimate model 1 no controls
+re_1_we <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_we, model = "random")
+summary(re_1_we)
+
+#Compute clustered standard errors
+robust_se_1_we <- vcovHC(re_1_we, type = "HC1", cluster = "group")
+robust_se_1.1_we <-sqrt(diag(robust_se_1_we))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_we)$coefficients, 4)
+coef_re_1_we <- coef(re_1_we) 
+coeftest(re_1_we, vcov = robust_se_1_we)
+
+#Estimate model 4 with full set of controls
+re_4_we <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+ +as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_we, model = "random")
+summary(re_4_we)
+
+#Compute clustered standard errors
+robust_se_4_we <- vcovHC(re_4_we, type = "HC1", cluster = "group")
+robust_se_4.1_we <-sqrt(diag(robust_se_4_we))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_we)$coefficients, 4)
+coef_re_4_we <- coef(re_4_we) 
+coeftest(re_4_we, vcov = robust_se_4_we)
+```
+
+
+## 5.3. Balkans estimation
+```{r }
+#Estimate model 1 no controls
+re_1_b <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_b, model = "random")
+summary(re_1_b)
+
+#Compute clustered standard errors
+robust_se_1_b <- vcovHC(re_1_b, type = "HC1", cluster = "group")
+robust_se_1.1_b <-sqrt(diag(robust_se_1_b))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_b)$coefficients, 4)
+coef_re_1_b <- coef(re_1_b) 
+coeftest(re_1_b, vcov = robust_se_1_b)
+
+#Estimate model 4 with full set of controls
+re_4_b <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+ +as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_b, model = "random")
+summary(re_4_b)
+
+#Compute clustered standard errors
+robust_se_4_b <- vcovHC(re_4_b, type = "HC1", cluster = "group")
+robust_se_4.1_b <-sqrt(diag(robust_se_4_b))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_b)$coefficients, 4)
+coef_re_4_b <- coef(re_4_b) 
+coeftest(re_4_b, vcov = robust_se_4_b)
+```
+
+## 5.4. Rest of the world estimation
+```{r }
+#Estimate model 1 no controls
+re_1_r <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                as.factor(Migration_background), data = d_panel_r, model = "random")
+summary(re_1_r)
+
+#Compute clustered standard errors
+robust_se_1_r <- vcovHC(re_1_r, type = "HC1", cluster = "group")
+robust_se_1.1_r <-sqrt(diag(robust_se_1_r))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_1_r)$coefficients, 4)
+coef_re_1_r <- coef(re_1_r) 
+coeftest(re_1_r, vcov = robust_se_1_r)
+
+#Estimate model 4 with full set of controls
+re_4_r <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+ +as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_r, model = "random")
+summary(re_4_r)
+
+#Compute clustered standard errors
+robust_se_4_r <- vcovHC(re_4_r, type = "HC1", cluster = "group")
+robust_se_4.1_r <-sqrt(diag(robust_se_4_r))
+
+#Display coefficients with clustered standard errors
+#round(summary(re_4_r)$coefficients, 4)
+coef_re_4_r <- coef(re_4_r) 
+coeftest(re_4_r, vcov = robust_se_4_r)
+```
+
+## 5.5. Print the results for all models and all countries
+```{r }
+#Model 1
+stargazer(re_1_ee, re_1_we, re_1_b, re_1_r, type="text", 
+          title = "Random Effects Results Model 1",
+          se = list(robust_se_1.1_ee, robust_se_1.1_we, robust_se_1.1_b, robust_se_1.1_r),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants"),
+          dep.var.labels="Life satisfaction", column.labels =c("EE", "WE", 
+                                                               "Balkans", "Rest"),
+          out = "models_re_cor_1.html")
+
+#Model 4
+stargazer(re_4_ee, re_4_we, re_4_b, re_4_r, type="text", 
+          title = "Random Effects Results Model 4",
+          se = list(robust_se_4.1_ee, robust_se_4.1_we, robust_se_4.1_b, robust_se_4.1_r),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants", "Male", "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction", column.labels =c("EE", "WE", 
+                                                               "Balkans", "Rest"),
+          out = "models_re_cor_4.html")
+```
+
+## 5.6. Interpretation of the coefficients RE models - country of origin analysis
+
+**Interpretation for EE**
+```{r }
+#RE model 1
+coef_re_1_ee
+#RE model 4
+coef_re_4_ee
+#Age
+#RE model 1
+min_age_1_ee <- -coef_re_1_ee[2]/(2*coef_re_1_ee[3])*100
+min_age_1_ee #52.53289 
+#RE model 4
+min_age_4_ee <- -coef_re_4_ee[2]/(2*coef_re_4_ee[3])*100
+min_age_4_ee #51.03752 
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_ee <-coef_re_1_ee[5]/100
+b_1_ee<-coef_re_1_ee[4]
+c_1_ee<-coef_re_1_ee[6]
+
+ysm_1_ee <- quad(a = a_1_ee, b = b_1_ee, c = c_1_ee)
+ysm_1_ee #31.91914   
+age_parity_1_ee<-ysm_1_ee+25 #25 start of immigration year 1
+age_parity_1_ee #56.91914   
+
+#RE model 4
+a_4_ee <-coef_re_4_ee[5]/100
+b_4_ee <-coef_re_4_ee[4]
+c_4_ee <-coef_re_4_ee[6]
+
+ysm_4_ee <- quad(a = a_4_ee, b = b_4_ee, c = c_4_ee)
+ysm_4_ee #33.65328   
+
+age_parity_4_ee<-ysm_4_ee+25 #25 start of immigration year 1
+age_parity_4_ee #58.65328    
+
+```
+
+**Interpretation for WE**
+```{r }
+#RE model 1
+coef_re_1_we
+#RE model 4
+coef_re_4_we
+#Age
+#RE model 1
+min_age_1_we <- -coef_re_1_we[2]/(2*coef_re_1_we[3])*100
+min_age_1_we #52.88941 
+#RE model 4
+min_age_4_we <- -coef_re_4_we[2]/(2*coef_re_4_we[3])*100
+min_age_4_we #51.06657 
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_we <-coef_re_1_we[5]/100
+b_1_we<-coef_re_1_we[4]
+c_1_we<-coef_re_1_we[6]
+
+ysm_1_we <- quad(a = a_1_we, b = b_1_we, c = c_1_we)
+ysm_1_we #30.11855    
+age_parity_1_we<-ysm_1_we+25 #25 start of immigration year 1
+age_parity_1_we #55.11855   
+
+#RE model 4
+a_4_we <-coef_re_4_we[5]/100
+b_4_we <-coef_re_4_we[4]
+c_4_we <-coef_re_4_we[6]
+
+ysm_4_we <- quad(a = a_4_we, b = b_4_we, c = c_4_we)
+ysm_4_we #33.95057     
+
+age_parity_4_we<-ysm_4_we+25 #25 start of immigration year 1
+age_parity_4_we #58.95057     
+
+```
+
+**Interpretation for Balkans**
+```{r }
+#RE model 1
+coef_re_1_b
+#RE model 4
+coef_re_4_b
+#Age
+#RE model 1
+min_age_1_b <- -coef_re_1_b[2]/(2*coef_re_1_b[3])*100
+min_age_1_b #53.49205 
+#RE model 4
+min_age_4_b <- -coef_re_4_b[2]/(2*coef_re_4_b[3])*100
+min_age_4_b #51.20238
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_b <-coef_re_1_b[5]/100
+b_1_b<-coef_re_1_b[4]
+c_1_b<-coef_re_1_b[6]
+
+ysm_1_b <- quad(a = a_1_b, b = b_1_b, c = c_1_b)
+ysm_1_b #complex number  
+age_parity_1_b<-ysm_1_b+25 #25 start of immigration year 1
+age_parity_1_b #complex number     
+
+#RE model 4
+a_4_b <-coef_re_4_b[5]/100
+b_4_b <-coef_re_4_b[4]
+c_4_b <-coef_re_4_b[6]
+
+ysm_4_b <- quad(a = a_4_b, b = b_4_b, c = c_4_b)
+ysm_4_b #22.74085      
+
+age_parity_4_b<-ysm_4_b+25 #25 start of immigration year 1
+age_parity_4_b #47.74085      
+
+```
+
+**Interpretation for Rest of the world**
+```{r }
+#RE model 1
+coef_re_1_r
+#RE model 4
+coef_re_4_r
+#Age
+#RE model 1
+min_age_1_r <- -coef_re_1_r[2]/(2*coef_re_1_r[3])*100
+min_age_1_r #54.01939 
+#RE model 4
+min_age_4_r <- -coef_re_4_r[2]/(2*coef_re_4_r[3])*100
+min_age_4_r #51.47187 
+
+#YSM
+# Solving the quadratic equation
+#RE model 1
+a_1_r <-coef_re_1_r[5]/100
+b_1_r<-coef_re_1_r[4]
+c_1_r<-coef_re_1_r[6]
+
+ysm_1_r <- quad(a = a_1_r, b = b_1_r, c = c_1_r)
+ysm_1_r #28.56511  
+age_parity_1_r<-ysm_1_r+25 #25 start of immigration year 1
+age_parity_1_r #53.56511      
+
+#RE model 4
+a_4_r <-coef_re_4_r[5]/100
+b_4_r <-coef_re_4_r[4]
+c_4_r <-coef_re_4_r[6]
+
+ysm_4_r <- quad(a = a_4_r, b = b_4_r, c = c_4_r)
+ysm_4_r #complex number      
+
+age_parity_4_r<-ysm_4_r+25 #25 start of immigration year 1
+age_parity_4_r #complex number   
+
+```
+
+
+## 5.7. Predict the LS per country of origin
+
+# 5.7.1. Prediction model 1
+
+**Predict the LS for EE**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_ee <- predict(re_1_ee, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+
+**Plot the prediction RE_1 model EE**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_ee <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_ee, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_ee
+```
+
+**Predict the LS for WE**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_we <- predict(re_1_we, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+
+**Plot the prediction RE_1 model WE**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_we <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_we, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_we
+```
+
+**Predict the LS for Balkans**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_b <- predict(re_1_b, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+
+**Plot the prediction RE_1 model Balkans**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_b <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_b, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.4, 8), breaks = seq(6.5, 8, 0.5))
+p1_b 
+```
+
+**Predict the LS for Rest of the world**
+```{r }
+#the data is the same
+combined_df_1$p_pred_re_r <- predict(re_1_r, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+```
+
+
+**Plot the prediction RE_1 model Rest of the world**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p1_r <- ggplot(combined_df_1, aes(x = Age, y = p_pred_re_r, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 8), breaks = seq(6.5, 8, 0.5))
+p1_r
+```
+
+**Combine the plots Model 1**
+```{r }
+# Combine the plots
+combined_plot_corm1 <- (p1_ee + ggtitle("East Europe Model 1")) + 
+                        (p1_we + ggtitle("West Europe Model 1")) + 
+                        (p1_b + ggtitle("Balkans Model 1")) + 
+                        (p1_r + ggtitle("Rest Model 1")) + 
+  plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_corm1 #run it in the console
+#ggsave("combined_plot_corm1.pdf", combined_plot_corm1)
+```
+
+
+# 5.7.2. Prediction model 4
+
+**Predict the LS for EE**
+```{r }
+#The data is already created 
+combined_df_4$p_pred_re_ee <- predict(re_4_ee, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model EE**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_ee <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re_ee, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_ee
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+**Predict the LS for WE**
+```{r }
+#The data is already created 
+combined_df_4$p_pred_re_we <- predict(re_4_we, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model WE**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_we <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re_we, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_we
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+
+**Predict the LS for Balkans**
+```{r }
+#The data is already created
+combined_df_4$p_pred_re_b <- predict(re_4_b, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model Balkans**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_b <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re_b, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_b
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+
+**Predict the LS for Rest of the world**
+```{r }
+#The data is already created 
+combined_df_4$p_pred_re_r <- predict(re_4_r, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+```
+
+**Plot the prediction RE_4 model Balkans**
+```{r }
+#Plotting Predictions Against Age for Natives and Immigrants
+p4_r <- ggplot(combined_df_4, aes(x = Age, y = p_pred_re_r, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6.5, 9), breaks = seq(6.5, 9, 0.5))
+p4_r
+# Arrange the plots in a 2x2 grid
+#grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+**Combine the plots Model 4**
+```{r }
+# Combine the plots
+combined_plot_corm4 <- (p4_ee + ggtitle("East Europe Model 4")) + 
+                        (p4_we + ggtitle("West Europe Model 4")) + 
+                        (p4_b + ggtitle("Balkans Model 4")) + 
+                        (p4_r + ggtitle("Rest Model 4")) + 
+  plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_corm4 #run it in the console
+#ggsave("combined_plot_corm4.pdf", combined_plot_corm4)
+```
+
+
+
+### 6. Attrition calculate loss of data
+```{r }
+#Testing with balanced panel and exploring differences
+d_panel_bal <- make.pbalanced(d_panel, balance.type = "shared.individuals")
+#Check dimensions and balance of the panel data
+pdim(d_panel_bal)
+#number of individuals = 725, number of years = 21, number of total observations = 15225
+#Compare loss of data
+pdim(d_panel)
+#Unbalanced Panel: n = 28829, T = 1-21, N = 171212
+#(171212-15225)/171212*100=91.10752% decrease in observations
+
+#Estimation with balanced sample
+#Model 1
+re_1_bal <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background), data = d_panel_bal, model = "random")
+summary(re_1_bal)
+#Compute clustered standard errors
+robust_se_1_bal <- vcovHC(re_1_bal, type = "HC1", cluster = "group")
+robust_se_1.1_bal <-sqrt(diag(robust_se_1_bal))
+#Display coefficients with clustered standard errors
+coef_re_1_bal <- coef(re_1_bal) 
+coeftest(re_1_bal, vcov = robust_se_1_bal)
+
+#Model 4
+re_4_bal <- plm(Life_satisfaction ~ 1+Age+I((Age^2)/100)+YSM+I((YSM^2)/100)+
+                    as.factor(Migration_background)+as.factor(Gender)+ as.factor(Marital_status)+
+                     Education+Log_Income+as.factor(Employment_status),
+                   data = d_panel_bal, model = "random")
+summary(re_4_bal)
+#Compute clustered standard errors
+robust_se_4_bal <- vcovHC(re_4_bal, type = "HC1", cluster = "group")
+robust_se_4.1_bal <-sqrt(diag(robust_se_4_bal))
+#Display coefficients with clustered standard errors
+coef_re_4_bal <- coef(re_4_bal) 
+coeftest(re_4_bal, vcov = robust_se_4_bal)
+
+#Print the results
+stargazer(re_1, re_1_bal, re_4, re_4_bal, type="text", 
+          title = "Random Effects Results",
+          se = list(robust_se_1.1, robust_se_1.1_bal, robust_se_4.1, robust_se_4.1_bal),
+          covariate.labels = c("Age", "Age (squared/100)", "YSM", "YSM (squared/100)", 
+                               "Immigrants", "Male", "Married",
+                               "Education", "Income (log)", "Employed"),
+          dep.var.labels="Life satisfaction", column.labels =c("M1 Unbalanced", "M1 Balanced", 
+                                                               "M4 Unbalanced", "M4 Balanced"),
+          out = "models_re_bal.html")
+
+#Predict the LS
+combined_df_1$p_pred_re_bal <- predict(re_1_bal, newdata = combined_df_1,
+                              type = "response", allow.new.levels = TRUE)
+combined_df_4$p_pred_re_bal <- predict(re_4_bal, newdata = combined_df_4,
+                              type = "response", allow.new.levels = TRUE)
+
+#Plot the predictions Model 1
+#Plotting Predictions Against Age for Natives and Immigrants
+ggplot(combined_df_1, aes(x = Age, y = p_pred_re_bal, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6, 8), breaks = seq(6, 8, 0.5))
+
+#Plot the predictions Model 4
+#Plotting Predictions Against Age for Natives and Immigrants
+ggplot(combined_df_4, aes(x = Age, y = p_pred_re_bal, linetype = factor(Migration_background))) +
+  geom_line(color = "black", size = 1) +  # Set color to black and adjust line size as needed
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c('Natives', 'Immigrants')) +  # Define linetypes
+  labs(#title = "Predicted Life Satisfaction Across Age for Natives and Immigrants",
+       x = "Age", y = "Predicted Life Satisfaction",
+       linetype = "Group") +  # Update legend title for linetype
+  theme_minimal() +
+  scale_x_continuous(limits = c(25, 65), breaks = seq(25, 65, 5))+
+  scale_y_continuous(limits = c(6, 8), breaks = seq(6, 8, 0.5))
+
+```
+
+### 7. Difference in predicted LS per YSM relative to natives
+
+## 7.1. Difference in predicted LS per YSM relative to natives for RE models 1-4
+```{r }
+#Plot the difference in predicted LS per YSM relative to natives
+
+#Reshape model 1
+reshape_1 <- reshape(combined_df_1, idvar = "Age", timevar = "Migration_background", direction = "wide")
+
+colnames(reshape_1)
+
+reshape_1$diff_nat_imm<-reshape_1$p_pred_re.1-reshape_1$p_pred_re.0
+
+#Reshape model 2
+reshape_2 <- reshape(combined_df_2, idvar = "Age", timevar = "Migration_background", direction = "wide")
+
+colnames(reshape_2)
+
+reshape_2$diff_nat_imm<-reshape_2$p_pred_re.1-reshape_2$p_pred_re.0
+
+#Reshape model 3
+reshape_3 <- reshape(combined_df_3, idvar = "Age", timevar = "Migration_background", direction = "wide")
+
+colnames(reshape_3)
+
+reshape_3$diff_nat_imm<-reshape_3$p_pred_re.1-reshape_3$p_pred_re.0
+
+#Reshape model 4
+reshape_4<-reshape(combined_df_4, idvar = "Age", timevar = "Migration_background", direction = "wide")
+
+colnames(reshape_4)
+
+reshape_4$diff_nat_imm<-reshape_4$p_pred_re.1-reshape_4$p_pred_re.0
+
+#Plot model 1
+p_ysm_1 <- ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.45,  0.3), breaks = seq(-0.45, 0.3, 0.1))
+min(reshape_1$diff_nat_imm)
+max(reshape_1$diff_nat_imm)
+p_ysm_1
+#Crossover age 27 as calculated
+
+#Plot model 2
+p_ysm_2 <-ggplot(reshape_2, aes(x = YSM.1, y = diff_nat_imm)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.45,  0.3), breaks = seq(-0.45, 0.3, 0.1))
+
+p_ysm_2
+
+
+#Plot model 3
+p_ysm_3 <- ggplot(reshape_3, aes(x = YSM.1, y = diff_nat_imm)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.25,  0.7), breaks = seq(-0.25, 0.7, 0.1))
+
+min(reshape_3$diff_nat_imm)
+max(reshape_3$diff_nat_imm)
+p_ysm_3
+
+
+#Plot model 4
+p_ysm_4 <- ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.25,  0.7), breaks = seq(-0.25, 0.7, 0.1))
+
+p_ysm_4
+#Crossover age 33 as calculated
+
+```
+
+**Combine all YSM plots RE models 1-4 **
+```{r }
+# Combine the plots
+combined_plot_ysm <- (p_ysm_1 + ggtitle("YSM RE Model 1")) + 
+                        (p_ysm_2 + ggtitle("YSM RE Model 2")) + 
+                        (p_ysm_3 + ggtitle("YSM RE Model 3")) + 
+                        (p_ysm_4 + ggtitle("YSM RE Model 4")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_ysm #run it in the console
+#ggsave("combined_plot_ysm.pdf", combined_plot_ysm)
+```
+
+## 7.2. Difference in predicted LS per YSM relative to natives for gender analysis
+```{r }
+#Model 1 female
+colnames(reshape_1)
+
+reshape_1$diff_nat_imm_female<-reshape_1$p_pred_re_f.1-reshape_1$p_pred_re_f.0
+
+#Model 1 male
+reshape_1$diff_nat_imm_male<-reshape_1$p_pred_re_m.1-reshape_1$p_pred_re_m.0
+
+#Model 4 female
+#Reshape model 4 different simulated data
+reshape_4_f <- reshape(combined_df_4_f, idvar = "Age", timevar = "Migration_background", direction = "wide")
+colnames(reshape_4_f)
+reshape_4_f$diff_nat_imm_female<-reshape_4_f$p_pred_re_f.1-reshape_4_f$p_pred_re_f.0
+
+#Model 4 male
+colnames(reshape_4)
+reshape_4$diff_nat_imm_male<-reshape_4$p_pred_re_m.1-reshape_4$p_pred_re_m.0
+
+#Plot the differences  for both genders for both models
+
+#Plot model 1 female
+p_ysm_1_f <- ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_female)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_female)
+max(reshape_1$diff_nat_imm_female)
+p_ysm_1_f
+
+#Plot model 1 male
+p_ysm_1_m <-ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_male)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_male)
+max(reshape_1$diff_nat_imm_male)
+p_ysm_1_m
+
+#Plot model 4 female
+p_ysm_4_f <- ggplot(reshape_4_f, aes(x = YSM.1, y = diff_nat_imm_female)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.4,  0.7), breaks = seq(-0.4, 0.7, 0.1))
+min(reshape_4_f$diff_nat_imm_female)
+max(reshape_4_f$diff_nat_imm_female)
+p_ysm_4_f
+
+#Plot model 4 male
+p_ysm_4_m <-ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm_male)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.4,  0.7), breaks = seq(-0.4, 0.7, 0.1))
+min(reshape_4$diff_nat_imm_male)
+max(reshape_4$diff_nat_imm_male)
+p_ysm_4_m
+
+#Combine all YSM plots 
+combined_plot_ysm_gender <- (p_ysm_1_f + ggtitle("YSM RE Model 1 Female")) + 
+                        (p_ysm_1_m + ggtitle("YSM RE Model 1 Male")) + 
+                        (p_ysm_4_f + ggtitle("YSM RE Model 4 Female")) + 
+                        (p_ysm_4_m + ggtitle("YSM RE Model 4 Male")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_ysm_gender #run it in the console
+#ggsave("combined_plot_ysm_gender.pdf", combined_plot_ysm_gender)
+
+```
+
+## 7.3. Difference in predicted LS per YSM relative to natives for country of origin analysis
+
+**Model 1 calculate differences per country**
+
+```{r }
+#Model 1 calculate differences per country
+colnames(reshape_1)
+
+#EE
+reshape_1$diff_nat_imm_ee<-reshape_1$p_pred_re_ee.1-reshape_1$p_pred_re_ee.0
+
+#WE
+reshape_1$diff_nat_imm_we<-reshape_1$p_pred_re_we.1-reshape_1$p_pred_re_we.0
+
+#Bal
+reshape_1$diff_nat_imm_b<-reshape_1$p_pred_re_b.1-reshape_1$p_pred_re_b.0
+
+#Rest
+reshape_1$diff_nat_imm_r<-reshape_1$p_pred_re_r.1-reshape_1$p_pred_re_r.0
+
+
+#Plot the differences per country for model 1
+
+#Plot model 1 EE
+p_ysm_1_ee <- ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_ee)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_ee)
+max(reshape_1$diff_nat_imm_ee)
+p_ysm_1_ee
+
+#Plot model 1 WE
+p_ysm_1_we <-ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_we)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_we)
+max(reshape_1$diff_nat_imm_we)
+p_ysm_1_we
+
+#Plot model 1 Bal
+p_ysm_1_b <- ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_b)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_b)
+max(reshape_1$diff_nat_imm_b)
+p_ysm_1_b
+
+#Plot model 1 Rest
+p_ysm_1_r <-ggplot(reshape_1, aes(x = YSM.1, y = diff_nat_imm_r)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.8,  0.4), breaks = seq(-0.8, 0.4, 0.1))
+min(reshape_1$diff_nat_imm_r)
+max(reshape_1$diff_nat_imm_r)
+p_ysm_1_r
+
+#Combine all YSM plots 
+combined_plot_ysm_cor <- (p_ysm_1_ee + ggtitle("YSM RE Model 1 East Europe")) + 
+                        (p_ysm_1_we + ggtitle("YSM RE Model 1 West Europe")) + 
+                        (p_ysm_1_b + ggtitle("YSM RE Model 1 Balkans")) + 
+                        (p_ysm_1_r + ggtitle("YSM RE Model 1 Rest")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_ysm_cor #run it in the console
+#ggsave("combined_plot_ysm_cor.pdf", combined_plot_ysm_cor)
+
+```
+
+
+**Model 4 calculate differences per country**
+
+```{r }
+#Model 4 calculate differences per country
+colnames(reshape_4)
+
+#EE
+reshape_4$diff_nat_imm_ee<-reshape_4$p_pred_re_ee.1-reshape_4$p_pred_re_ee.0
+
+#WE
+reshape_4$diff_nat_imm_we<-reshape_4$p_pred_re_we.1-reshape_4$p_pred_re_we.0
+
+#Bal
+reshape_4$diff_nat_imm_b<-reshape_4$p_pred_re_b.1-reshape_4$p_pred_re_b.0
+
+#Rest
+reshape_4$diff_nat_imm_r<-reshape_4$p_pred_re_r.1-reshape_4$p_pred_re_r.0
+
+
+#Plot the differences per country for model 4
+
+#Plot model 4 EE
+p_ysm_4_ee <- ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm_ee)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.4,  0.9), breaks = seq(-0.4, 0.9, 0.1))
+min(reshape_4$diff_nat_imm_ee)
+max(reshape_4$diff_nat_imm_ee)
+p_ysm_4_ee
+
+#Plot model 4 WE
+p_ysm_4_we <-ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm_we)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.4,  0.9), breaks = seq(-0.4, 0.9, 0.1))
+min(reshape_4$diff_nat_imm_we)
+max(reshape_4$diff_nat_imm_we)
+p_ysm_4_we
+
+#Plot model 4 Bal
+p_ysm_4_b <- ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm_b)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3)) +
+  scale_y_continuous(limits = c(-0.4,  0.9), breaks = seq(-0.4, 0.9, 0.1))
+min(reshape_4$diff_nat_imm_b)
+max(reshape_4$diff_nat_imm_b)
+p_ysm_4_b
+
+#Plot model 4 Rest
+p_ysm_4_r <-ggplot(reshape_4, aes(x = YSM.1, y = diff_nat_imm_r)) +
+  geom_line(color = "black", size = 1, linetype = "dashed") +  # Set color to black and adjust line size as needed
+  labs(#title = "Difference in LS of immigrants relative to natives of same age",
+       x = "YSM", y = "Diff in LS of immigrants to natives")+
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray", size = 1)+
+  theme_minimal() +
+  scale_x_continuous(limits = c(1, 41), breaks = seq(1, 40, 3))+
+  scale_y_continuous(limits = c(-0.4,  0.9), breaks = seq(-0.4, 0.9, 0.1))
+min(reshape_4$diff_nat_imm_r)
+max(reshape_4$diff_nat_imm_r)
+p_ysm_4_r
+
+#Combine all YSM plots 
+combined_plot_ysm_cor_4 <- (p_ysm_4_ee + ggtitle("YSM RE Model 4 East Europe")) + 
+                        (p_ysm_4_we + ggtitle("YSM RE Model 4 West Europe")) + 
+                        (p_ysm_4_b + ggtitle("YSM RE Model 4 Balkans")) + 
+                        (p_ysm_4_r + ggtitle("YSM RE Model 4 Rest")) + 
+plot_layout(nrow = 2, guides = 'collect') # This collects and displays the guides (legends) only once
+
+
+combined_plot_ysm_cor_4 #run it in the console
+#ggsave("combined_plot_ysm_cor_4.pdf", combined_plot_ysm_cor_4)
+
+```
+
+
+
+
+

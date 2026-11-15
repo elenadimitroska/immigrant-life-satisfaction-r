@@ -1,0 +1,24 @@
+# Restricted / local data
+data/*
+!data/README.md
+*.dta
+*.sav
+*.csv
+*.xlsx
+*.RData
+*.rds
+
+# Generated outputs
+output/
+*.html
+
+# R / RStudio
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# OS files
+.DS_Store
+Thumbs.db
