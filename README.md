@@ -41,7 +41,7 @@ The final analytical dataset is an unbalanced panel containing:
 - 140,778 native observations
 - 30,434 immigrant observations
 
-The SOEP microdata are **not redistributed in this repository** because access and use are subject to SOEP data conditions. See [`data/README.md`](data/README.md) for setup information.
+The SOEP microdata are **not redistributed in this repository** because access and use are subject to SOEP data conditions. 
 
 ## Empirical approach
 
@@ -64,11 +64,11 @@ The models use cluster-robust standard errors at the individual level. Additiona
 
 Across the model specifications, immigrant life satisfaction is generally higher at younger ages but declines more steeply with age than that of native-born respondents. The estimated profiles converge around middle age, with the exact crossing point depending on the model specification.
 
-![Predicted life satisfaction by age](figures/predicted_life_satisfaction_age.png)
+![Predicted life satisfaction by age](predicted_life_satisfaction_age.png)
 
 A separate gender analysis shows different convergence patterns for female and male immigrants.
 
-![Predicted life satisfaction by age and gender](figures/predicted_life_satisfaction_gender.png)
+![Predicted life satisfaction by age and gender](predicted_life_satisfaction_gender.png)
 
 These results should be interpreted as **conditional associations rather than causal effects** because of the observational design and model assumptions.
 
@@ -78,13 +78,9 @@ These results should be interpreted as **conditional associations rather than ca
 immigrant-life-satisfaction-r/
 ├── README.md
 ├── .gitignore
-├── analysis/
-│   └── master_thesis_analysis.Rmd
-├── data/
-│   └── README.md
-└── figures/
-    ├── predicted_life_satisfaction_age.png
-    └── predicted_life_satisfaction_gender.png
+├── master_thesis_analysis.Rmd
+├── predicted_life_satisfaction_age.png
+└── predicted_life_satisfaction_gender.png
 ```
 
 ## R packages used
@@ -98,7 +94,7 @@ The analysis uses packages including:
 1. Obtain authorized access to the SOEP teaching data.
 2. Clone this repository.
 3. Set `SOEP_DATA_PATH` to the local SOEP teaching-data directory.
-4. Open `analysis/master_thesis_analysis.Rmd` in RStudio.
+4. Open `master_thesis_analysis.Rmd` in RStudio.
 5. Install the required packages if they are not already available.
 6. Run the analysis sections or knit the document.
 
