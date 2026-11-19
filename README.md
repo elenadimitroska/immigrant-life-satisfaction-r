@@ -1,4 +1,4 @@
-# Immigrant Assimilation & Life Satisfaction in Germany
+# Immigrant Integration & Life Satisfaction in Germany
 
 **Panel-data analysis in R using the German Socio-Economic Panel (SOEP), 2000–2020**
 
